@@ -93,6 +93,7 @@ steps:
 - `task.run_agent_prompt`
 - `task.send_discord_message`
 - `task.persist_text`
+- `task.persist_memory`
 
 ## Runtime Notes
 

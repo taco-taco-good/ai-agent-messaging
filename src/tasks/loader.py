@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Any, Dict
 
 import yaml
 
 from agent_messaging.config.settings import SettingsError
 from agent_messaging.tasks.models import ALLOWED_STEP_TYPES, TaskDefinition, TaskOutput, TaskSchedule, TaskStep
+
+_SAFE_IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
 def load_tasks(tasks_dir: Path) -> Dict[str, TaskDefinition]:
@@ -38,8 +41,10 @@ def _load_task_document(path: Path) -> TaskDefinition:
         raise SettingsError("Task requires non-empty `steps`: {0}".format(path))
 
     parsed_steps = [_parse_step(step, allowed_tools, path) for step in steps]
+    task_id = _require_string(raw, "id", path)
+    _validate_identifier(task_id, label="task id", path=path)
     return TaskDefinition(
-        id=_require_string(raw, "id", path),
+        id=task_id,
         description=str(raw.get("description", "")).strip(),
         agent_id=_require_string(raw, "agent", path),
         enabled=bool(raw.get("enabled", True)),
@@ -71,8 +76,10 @@ def _parse_step(payload: Any, allowed_tools: list[str], path: Path) -> TaskStep:
     raw_parameters = payload.get("with", {})
     if not isinstance(raw_parameters, dict):
         raise SettingsError("Step `with` must be a mapping: {0}".format(path))
+    step_id = _require_string(payload, "id", path)
+    _validate_identifier(step_id, label="step id", path=path)
     return TaskStep(
-        id=_require_string(payload, "id", path),
+        id=step_id,
         type=step_type,
         tool=tool,
         parameters=raw_parameters,
@@ -96,3 +103,14 @@ def _require_string(payload: Dict[str, Any], key: str, path: Path) -> str:
     if not isinstance(value, str) or not value.strip():
         raise SettingsError("Task requires string `{0}` in {1}".format(key, path))
     return value.strip()
+
+
+def _validate_identifier(value: str, *, label: str, path: Path) -> None:
+    if not _SAFE_IDENTIFIER.fullmatch(value):
+        raise SettingsError(
+            "Invalid {0} `{1}` in {2}. Use lowercase slug, digits, `_`, `-`.".format(
+                label,
+                value,
+                path,
+            )
+        )

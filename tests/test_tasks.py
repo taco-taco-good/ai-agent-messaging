@@ -71,6 +71,34 @@ class TaskRuntimeTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(SettingsError, "Unsupported step type"):
                 load_tasks(tasks_dir)
 
+    def test_load_tasks_rejects_path_like_task_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            tasks_dir = Path(tempdir)
+            (tasks_dir / "bad.yaml").write_text(
+                textwrap.dedent(
+                    """
+                    id: ../escape
+                    description: Invalid task
+                    agent: codex
+                    enabled: true
+                    schedule:
+                      kind: cron
+                      expr: "0 7 * * *"
+                    allowed_tools:
+                      - task.noop
+                    steps:
+                      - id: ping
+                        type: load
+                        tool: task.noop
+                    """
+                ).strip()
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(SettingsError, "Invalid task id"):
+                load_tasks(tasks_dir)
+
     async def test_daily_briefing_task_runs_end_to_end(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir)
@@ -197,6 +225,73 @@ class TaskRuntimeTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 connection.close()
             self.assertEqual(row, ("heartbeat", 1))
+
+    async def test_persist_memory_writes_task_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            tasks_dir = root / "config" / "tasks"
+            tasks_dir.mkdir(parents=True)
+            (tasks_dir / "persist_memory.yaml").write_text(
+                textwrap.dedent(
+                    """
+                    id: persist_memory
+                    description: Persist a task report
+                    agent: codex
+                    enabled: true
+                    schedule:
+                      kind: cron
+                      expr: "0 7 * * *"
+                      timezone: "UTC"
+                    allowed_tools:
+                      - task.render_template
+                      - task.persist_memory
+                    steps:
+                      - id: compose
+                        type: generate
+                        tool: task.render_template
+                        with:
+                          template: "memory body"
+                      - id: save
+                        type: persist
+                        tool: task.persist_memory
+                        with:
+                          content: "{{ steps.compose.content }}"
+                          topic: "daily ai briefing"
+                          summary: "Stored from task runtime."
+                          tags:
+                            - task
+                            - briefing
+                    """
+                ).strip()
+                + "\n",
+                encoding="utf-8",
+            )
+
+            agent = AgentConfig(
+                agent_id="codex",
+                provider="codex",
+                discord_token="token",
+                workspace_dir=root / "workspace" / "codex",
+                memory_dir=root / "memory" / "codex",
+                model="alpha",
+            )
+            runtime = TaskRuntime(
+                registry=TaskRegistry(load_tasks(tasks_dir)),
+                tool_runtime=ToolRuntime(),
+                store=TaskStore(root / "runtime" / "tasks.sqlite"),
+                agent_registry=AgentRegistry({"codex": agent}),
+                runtime_dir=root / "runtime",
+            )
+
+            result = await runtime.run_task("persist_memory")
+
+            assert result is not None
+            memory_files = sorted((root / "memory" / "codex" / "tasks" / "persist_memory").rglob("run_*.md"))
+            self.assertEqual(len(memory_files), 1)
+            document = memory_files[0].read_text(encoding="utf-8")
+            self.assertIn("record_type: task_run", document)
+            self.assertIn("topic: daily ai briefing", document)
+            self.assertIn("memory body", document)
 
     async def test_scheduler_runs_matching_slot_once(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
