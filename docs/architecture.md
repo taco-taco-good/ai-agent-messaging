@@ -66,6 +66,13 @@ Discord API
 5. `Storage Layer`
    - `sessions.json`: live session SSOT
    - markdown memory store: long-term conversation memory
+   - `tasks.sqlite`: task/scheduler run state SSOT
+
+6. `Task Runtime Layer`
+   - YAML task 문서 로드
+   - schedule 기반 task 실행
+   - task step orchestration
+   - Discord delivery와 artifact 저장
 
 ## 2. Primary Modules
 
@@ -177,6 +184,26 @@ MVP whitelist:
 규칙:
 - `memory_search`는 provider wrapper 계약에 포함하지 않음
 - wrapper는 tool 실행 결과를 모를 수 있어도 됨
+
+### 2.8 Task Runtime Layer
+
+책임:
+- `config/tasks/*.yaml` 문서 로드
+- 허용된 step type만 파싱
+- task run state를 SQLite에 저장
+- 일정 시각에 task 실행
+- task가 tool을 순서대로 호출하도록 orchestration
+
+구성:
+- `TaskRegistry`
+- `TaskRuntime`
+- `TaskScheduler`
+- `TaskStore`
+
+규칙:
+- task는 자유 Python 코드가 아니라 YAML DSL이다
+- `core`는 orchestration과 state만 담당한다
+- task는 workflow 정의, tool은 개별 기능 단위다
 
 ### 2.8 Transport Layer
 

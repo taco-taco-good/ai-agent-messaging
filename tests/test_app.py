@@ -8,7 +8,7 @@ from pathlib import Path
 from agent_messaging.application.app import AgentMessagingApp
 from agent_messaging.core.errors import InteractionValidationError
 from agent_messaging.core.models import AgentConfig, FrontmatterMetadata, MemorySearchRequest
-from agent_messaging.core.registry import AgentRegistry
+from agent_messaging.config.registry import AgentRegistry
 from agent_messaging.providers.base import CLIWrapper
 from agent_messaging.runtime.session_manager import SessionManager
 from agent_messaging.runtime.session_store import SessionStore
@@ -84,6 +84,22 @@ class AgentMessagingAppTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
         self.root = root
+
+    async def test_register_task_delegates_to_task_runtime(self) -> None:
+        class FakeTaskRuntime:
+            def __init__(self) -> None:
+                self.registered = None
+
+            def register_task(self, task) -> None:
+                self.registered = task
+
+        fake_runtime = FakeTaskRuntime()
+        self.app.task_runtime = fake_runtime
+        task = object()
+
+        self.app.register_task(task)
+
+        self.assertIs(fake_runtime.registered, task)
 
     async def asyncTearDown(self) -> None:
         self.tempdir.cleanup()

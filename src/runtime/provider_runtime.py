@@ -6,7 +6,7 @@ import time as _time
 from typing import Callable, Dict, Optional, Tuple
 
 from agent_messaging.core.interfaces import ProviderFactoryProtocol, SessionManagerProtocol
-from agent_messaging.core.models import AgentConfig, ModelOption, SessionRecord, utc_now
+from agent_messaging.core.models import AgentConfig, ModelOption, SessionRecord
 from agent_messaging.observability.context import log_context
 from agent_messaging.providers.base import CLIWrapper, ProviderError, ProviderStartupError
 
@@ -16,8 +16,8 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_WATCHDOG_INTERVAL = 30.0
 _DEFAULT_MAX_RESTART_ATTEMPTS = 3
-_DEFAULT_RESTART_BACKOFF_BASE = 1.0  # initial delay; doubles each attempt
-_DEFAULT_IDLE_TIMEOUT = 3600.0  # seconds – stop idle wrappers after 1 hour
+_DEFAULT_RESTART_BACKOFF_BASE = 1.0
+_DEFAULT_IDLE_TIMEOUT = 3600.0
 
 CrashCallback = Callable[[str, str, str], object]
 
@@ -42,19 +42,13 @@ class ProviderRuntime:
         self._idle_timeout = idle_timeout
         self._on_crash = on_crash
         self._last_activity: Dict[Tuple[str, str], float] = {}
-
         self._wrappers: Dict[Tuple[str, str], CLIWrapper] = {}
         self._wrapper_configs: Dict[Tuple[str, str], AgentConfig] = {}
         self._restart_counts: Dict[Tuple[str, str], int] = {}
         self._session_locks: Dict[Tuple[str, str], asyncio.Lock] = {}
         self._watchdog_task: Optional[asyncio.Task[None]] = None
 
-    # ------------------------------------------------------------------
-    # Watchdog
-    # ------------------------------------------------------------------
-
     def start_watchdog(self) -> None:
-        """Start background watchdog task. Safe to call multiple times."""
         if self._watchdog_task is not None and not self._watchdog_task.done():
             return
         self._watchdog_task = asyncio.create_task(
@@ -113,10 +107,6 @@ class ProviderRuntime:
             except Exception:
                 logger.exception("idle_wrapper_stop_error", extra={"agent_id": agent_id})
 
-    # ------------------------------------------------------------------
-    # Crash recovery
-    # ------------------------------------------------------------------
-
     async def _try_restart(
         self,
         wrapper_key: Tuple[str, str],
@@ -136,7 +126,8 @@ class ProviderRuntime:
             self._wrapper_configs.pop(wrapper_key, None)
             if self._on_crash:
                 self._on_crash(
-                    agent_id, session_key,
+                    agent_id,
+                    session_key,
                     "자동 재시작 횟수({0}회)를 초과했습니다. 수동 확인이 필요합니다.".format(self._max_restart_attempts),
                 )
             return None
@@ -174,27 +165,19 @@ class ProviderRuntime:
         )
         if self._on_crash:
             self._on_crash(
-                agent_id, session_key,
+                agent_id,
+                session_key,
                 "에이전트가 재시작되었습니다. (시도 {0}/{1})".format(count, self._max_restart_attempts),
             )
         return wrapper
 
-    # ------------------------------------------------------------------
-    # Session-level concurrency control
-    # ------------------------------------------------------------------
-
     def session_lock(self, agent_id: str, session_key: str) -> asyncio.Lock:
-        """Return a per-session lock to serialize message handling."""
         key = (agent_id, session_key)
         lock = self._session_locks.get(key)
         if lock is None:
             lock = asyncio.Lock()
             self._session_locks[key] = lock
         return lock
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
 
     async def ensure_wrapper(
         self,
@@ -216,7 +199,6 @@ class ProviderRuntime:
             self._last_activity[wrapper_key] = _time.monotonic()
             return session_key, wrapper
 
-        # Dead wrapper – try crash recovery
         if wrapper is not None and not wrapper.is_alive():
             logger.warning("provider_dead_on_message", extra={"agent_id": agent.agent_id, "session_key": session_key})
             self._wrapper_configs[wrapper_key] = agent
@@ -224,7 +206,6 @@ class ProviderRuntime:
             if recovered is not None:
                 return session_key, recovered
 
-        # Fresh start
         existing_session = await self.session_manager.get(
             channel_id=channel_id,
             is_dm=is_dm,
@@ -255,37 +236,35 @@ class ProviderRuntime:
                 )
         return session_key, wrapper
 
-    async def stop_session(
-        self,
-        agent_id: str,
-        session_key: str,
-    ) -> None:
-        wrapper_key = (agent_id, session_key)
-        wrapper = self._wrappers.pop(wrapper_key, None)
-        self._wrapper_configs.pop(wrapper_key, None)
-        self._restart_counts.pop(wrapper_key, None)
-        self._session_locks.pop(wrapper_key, None)
-        self._last_activity.pop(wrapper_key, None)
+    async def stop_session(self, agent_id: str, session_key: str) -> None:
+        key = (agent_id, session_key)
+        wrapper = self._wrappers.pop(key, None)
+        self._wrapper_configs.pop(key, None)
+        self._restart_counts.pop(key, None)
+        self._session_locks.pop(key, None)
+        self._last_activity.pop(key, None)
         if wrapper is not None:
             await wrapper.stop()
 
     async def shutdown(self) -> None:
-        if self._watchdog_task is not None and not self._watchdog_task.done():
+        if self._watchdog_task is not None:
             self._watchdog_task.cancel()
             try:
                 await self._watchdog_task
             except asyncio.CancelledError:
                 pass
             self._watchdog_task = None
-
-        wrappers = list(self._wrappers.values())
+        wrappers = list(self._wrappers.items())
         self._wrappers.clear()
         self._wrapper_configs.clear()
         self._restart_counts.clear()
         self._session_locks.clear()
         self._last_activity.clear()
-        for wrapper in wrappers:
-            await wrapper.stop()
+        for (_, _), wrapper in wrappers:
+            try:
+                await wrapper.stop()
+            except Exception:
+                logger.exception("provider_shutdown_error")
 
     async def options_for(
         self,
@@ -294,54 +273,9 @@ class ProviderRuntime:
         is_dm: bool,
         parent_channel_id: Optional[str] = None,
     ) -> list[ModelOption]:
-        session_key, wrapper = await self.ensure_wrapper(
-            agent=agent,
-            channel_id=channel_id,
-            is_dm=is_dm,
-            parent_channel_id=parent_channel_id,
-        )
-        lock = self.session_lock(agent.agent_id, session_key)
-        catalog = list(wrapper.available_model_catalog())
-        if catalog:
-            return catalog
-        if wrapper.supports_native_command("/models"):
-            try:
-                async with lock:
-                    response = await self._collect(wrapper.send_native_command("/models"))
-                parsed = self._parse_model_options(response)
-                if parsed:
-                    return parsed
-            except Exception:
-                logger.exception(
-                    "provider_model_options_fetch_failed",
-                    extra={"agent_id": agent.agent_id, "session_key": session_key},
-                )
-        return [
-            ModelOption(value=option, label=option)
-            for option in wrapper.available_model_options()
-        ]
+        _, wrapper = await self.ensure_wrapper(agent, channel_id, is_dm, parent_channel_id)
+        options = getattr(wrapper, "model_options", ()) or ()
+        return [ModelOption(value=value, label=value) for value in options]
 
-    async def _collect(self, stream) -> str:
-        parts = []
-        async for piece in stream:
-            parts.append(piece)
-        return "".join(parts)
 
-    @staticmethod
-    def _parse_model_options(response: str) -> list[ModelOption]:
-        options: list[ModelOption] = []
-        for raw_line in response.replace(",", "\n").splitlines():
-            line = raw_line.strip()
-            line = line.lstrip("-*").strip()
-            if not line or line.startswith("model:") or line.startswith("stats:"):
-                continue
-            options.append(ModelOption(value=line, label=line))
-        # Preserve order while dropping duplicates
-        seen = set()
-        result: list[ModelOption] = []
-        for option in options:
-            if option.value in seen:
-                continue
-            seen.add(option.value)
-            result.append(option)
-        return result
+__all__ = ["ProviderRuntime"]

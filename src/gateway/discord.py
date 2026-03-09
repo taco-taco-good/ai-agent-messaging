@@ -146,6 +146,16 @@ def create_agent_client(app: AgentMessagingApp, agent_id: str):
             super().__init__(intents=intents)
             self.tree = app_commands.CommandTree(self)
 
+        async def on_ready(self) -> None:  # pragma: no cover - requires discord.py
+            async def _send_to_channel(channel_id: str, chunks: list[str]) -> None:
+                channel = self.get_channel(int(channel_id))
+                if channel is None:
+                    channel = await self.fetch_channel(int(channel_id))
+                await _send_channel_chunks(channel, chunks)
+
+            app.register_channel_sender(agent_id, _send_to_channel)
+            logger.info("discord_client_ready", extra={"agent_id": agent_id, "user_id": str(self.user.id if self.user else "")})
+
         async def setup_hook(self) -> None:  # pragma: no cover - requires discord.py
             @self.tree.command(name="new", description="Reset the current CLI session")
             async def new_session(interaction) -> None:
@@ -339,7 +349,7 @@ async def run_discord_gateways(app: AgentMessagingApp) -> None:
         client = create_agent_client(app, agent.agent_id)
         clients.append(client)
         tasks.append(asyncio.create_task(client.start(agent.discord_token)))
-    app._provider_runtime.start_watchdog()
+    app.start_background_tasks()
     try:
         await asyncio.gather(*tasks)
     finally:

@@ -29,13 +29,10 @@ from agent_messaging.core.models import (
     SessionRecord,
     utc_now,
 )
-from agent_messaging.core.registry import AgentRegistry
-
 __all__ = [
     "AgentConfig",
     "AgentMessagingError",
     "AgentNotFoundError",
-    "AgentRegistry",
     "AgentRegistryProtocol",
     "CommandServiceProtocol",
     "CommandValidationError",

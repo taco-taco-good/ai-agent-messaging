@@ -25,3 +25,9 @@ agents:
     # 제공자의 기본 CLI 명령 뒤에 추가로 전달할 인자들입니다.
     cli_args:
       - <extra-cli-arg>
+
+# 선택 사항: YAML task 문서를 둘 디렉터리입니다.
+tasks_dir: ./tasks
+
+# 선택 사항: scheduler/task run 상태를 저장할 SQLite 경로입니다.
+task_store_path: ../runtime/tasks.sqlite

@@ -1,6 +1,4 @@
-from agent_messaging.application.command_router import CommandRouter
-
-__all__ = ["AgentMessagingApp", "CommandRouter", "build_app", "main"]
+__all__ = ["AgentMessagingApp", "build_app", "main"]
 
 
 def __getattr__(name: str):

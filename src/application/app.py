@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 from typing import List, Optional
 
+from agent_messaging.config.registry import AgentRegistry
 from agent_messaging.config.settings import load_settings
 from agent_messaging.core.interfaces import (
     AgentRegistryProtocol,
@@ -13,17 +14,20 @@ from agent_messaging.core.interfaces import (
     ProviderFactoryProtocol,
     ToolRuntimeProtocol,
 )
-from agent_messaging.core.registry import AgentRegistry
 from agent_messaging.memory.init_docs import materialize_init_doc
 from agent_messaging.memory.metadata import MetadataGenerator
 from agent_messaging.memory.search import MemorySearchTool
 from agent_messaging.memory.writer import MemoryWriter
 from agent_messaging.observability.logging import setup_logging
 from agent_messaging.providers.factory import create_provider
+from agent_messaging.runtime.delivery import DeliveryRuntime
+from agent_messaging.runtime.interactions import PendingInteractionStore
+from agent_messaging.runtime.provider_runtime import ProviderRuntime
 from agent_messaging.runtime.session_manager import SessionManager
 from agent_messaging.runtime.session_store import SessionStore
 from agent_messaging.runtime.tools import ToolRuntime
-from agent_messaging.services import MessagingService, PendingInteractionStore, ProviderRuntime
+from agent_messaging.services import MessagingService
+from agent_messaging.tasks import TaskRegistry, TaskRuntime, TaskScheduler, TaskStore, load_tasks
 
 
 logger = logging.getLogger(__name__)
@@ -41,6 +45,8 @@ class AgentMessagingApp:
         tool_runtime: Optional[ToolRuntimeProtocol] = None,
         metadata_generator: Optional[MetadataGeneratorProtocol] = None,
         chunk_limit: int = 2000,
+        task_runtime: Optional[TaskRuntime] = None,
+        delivery_runtime: Optional[DeliveryRuntime] = None,
     ) -> None:
         if service is None:
             if registry is None or session_manager is None or provider_factory is None:
@@ -65,11 +71,14 @@ class AgentMessagingApp:
                 chunk_limit=chunk_limit,
             )
         self.service = service
+        self.delivery_runtime = delivery_runtime or DeliveryRuntime()
         self.registry = service.registry
         self.session_manager = service.session_manager
         self.provider_factory = service.provider_runtime.provider_factory
         self._provider_runtime = service.provider_runtime
         self._pending_interactions = service.pending_interactions
+        self.task_runtime = task_runtime
+        self._task_scheduler: Optional[TaskScheduler] = None
 
     async def handle_user_message(self, *args, **kwargs):
         return await self.service.handle_user_message(*args, **kwargs)
@@ -90,7 +99,28 @@ class AgentMessagingApp:
         return await self.service.available_model_options(*args, **kwargs)
 
     async def shutdown(self) -> None:
+        if self._task_scheduler is not None:
+            await self._task_scheduler.shutdown()
         await self.service.shutdown()
+
+    async def run_task(self, task_id: str):
+        if self.task_runtime is None:
+            raise RuntimeError("Task runtime is not configured.")
+        return await self.task_runtime.run_task(task_id)
+
+    def register_task(self, task) -> None:
+        if self.task_runtime is None:
+            raise RuntimeError("Task runtime is not configured.")
+        self.task_runtime.register_task(task)
+
+    def register_channel_sender(self, agent_id: str, sender) -> None:
+        if self.task_runtime is not None:
+            self.task_runtime.register_delivery_sender(agent_id, sender)
+
+    def start_background_tasks(self) -> None:
+        self._provider_runtime.start_watchdog()
+        if self._task_scheduler is not None:
+            self._task_scheduler.start()
 
     @property
     def _wrappers(self):
@@ -130,7 +160,25 @@ def build_app(config_path: Path) -> AgentMessagingApp:
         tool_runtime=tool_runtime,
         pending_interactions=PendingInteractionStore(),
     )
-    return AgentMessagingApp(service)
+    tasks = load_tasks(settings.tasks_dir)
+    task_registry = TaskRegistry(tasks)
+    delivery_runtime = DeliveryRuntime()
+    task_runtime = TaskRuntime(
+        registry=task_registry,
+        tool_runtime=tool_runtime,
+        store=TaskStore(settings.task_store_path),
+        agent_registry=registry,
+        provider_factory=create_provider,
+        delivery_runtime=delivery_runtime,
+        runtime_dir=settings.runtime_dir,
+    )
+    app = AgentMessagingApp(
+        service,
+        task_runtime=task_runtime,
+        delivery_runtime=delivery_runtime,
+    )
+    app._task_scheduler = TaskScheduler(task_registry, task_runtime)
+    return app
 
 
 def main(argv: Optional[List[str]] = None) -> int:

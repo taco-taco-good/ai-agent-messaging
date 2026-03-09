@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from agent_messaging.application.command_router import CommandRouter
+from agent_messaging.services.command_router import CommandRouter
 from agent_messaging.core.interfaces import (
     AgentRegistryProtocol,
     CommandServiceProtocol,
@@ -21,7 +21,7 @@ from agent_messaging.memory.writer import MemoryWriter
 from agent_messaging.runtime.tools import ToolRuntime
 from agent_messaging.services.command import CommandService
 from agent_messaging.services.conversation import ConversationService
-from agent_messaging.services.interactions import PendingInteractionStore
+from agent_messaging.runtime.interactions import PendingInteractionStore
 
 
 logger = logging.getLogger(__name__)
