@@ -61,3 +61,6 @@ class CommandRouter:
         if command == "/model" and not args:
             return RoutedCLICommand(command=command, requires_interaction=True)
         return RoutedCLICommand(command=command, args=args)
+
+
+__all__ = ["CommandRouter"]

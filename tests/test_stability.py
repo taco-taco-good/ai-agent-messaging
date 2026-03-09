@@ -10,11 +10,11 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from agent_messaging.core.models import AgentConfig, FrontmatterMetadata
-from agent_messaging.core.registry import AgentRegistry
+from agent_messaging.config.registry import AgentRegistry
 from agent_messaging.providers.base import CLIWrapper, ProviderStartupError
+from agent_messaging.runtime import ProviderRuntime
 from agent_messaging.runtime.session_manager import SessionManager
 from agent_messaging.runtime.session_store import SessionStore
-from agent_messaging.services import ProviderRuntime
 from agent_messaging.services.conversation import ConversationService
 
 

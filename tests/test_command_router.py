@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from agent_messaging.application.command_router import CommandRouter
+from agent_messaging.services.command_router import CommandRouter
 from agent_messaging.core.errors import CommandValidationError
 
 

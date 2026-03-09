@@ -6,15 +6,15 @@ from pathlib import Path
 
 from agent_messaging.core.errors import InteractionValidationError
 from agent_messaging.core.models import AgentConfig, FrontmatterMetadata, ModelOption
-from agent_messaging.core.registry import AgentRegistry
+from agent_messaging.config.registry import AgentRegistry
 from agent_messaging.providers.base import CLIWrapper
 from agent_messaging.services import (
     CommandService,
+    CommandRouter,
     ConversationService,
     MessagingService,
-    PendingInteractionStore,
-    ProviderRuntime,
 )
+from agent_messaging.runtime import PendingInteractionStore, ProviderRuntime
 from agent_messaging.runtime.session_manager import SessionManager
 from agent_messaging.runtime.session_store import SessionStore
 

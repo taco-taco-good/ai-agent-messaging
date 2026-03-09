@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 class AppSettings:
     agents: Dict[str, AgentConfig]
     runtime_dir: Path
+    tasks_dir: Path
+    task_store_path: Path
 
 
 def load_settings(config_path: Path) -> AppSettings:
@@ -70,7 +72,14 @@ def load_settings(config_path: Path) -> AppSettings:
         )
 
     runtime_dir = _resolve_path(base_dir, raw.get("runtime_dir", "../runtime"))
-    return AppSettings(agents=agents, runtime_dir=runtime_dir)
+    tasks_dir = _resolve_path(base_dir, raw.get("tasks_dir", "./tasks"))
+    task_store_path = _resolve_path(base_dir, raw.get("task_store_path", "../runtime/tasks.sqlite"))
+    return AppSettings(
+        agents=agents,
+        runtime_dir=runtime_dir,
+        tasks_dir=tasks_dir,
+        task_store_path=task_store_path,
+    )
 
 
 def _resolve_discord_token(payload: Dict[str, object]) -> str:

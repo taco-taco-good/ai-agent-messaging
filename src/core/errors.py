@@ -40,3 +40,9 @@ class UnsupportedProviderError(AgentMessagingError):
     """Raised when an unsupported provider is requested."""
 
     error_code = "unsupported_provider"
+
+
+class TaskNotFoundError(AgentMessagingError):
+    """Raised when an unknown task id is requested."""
+
+    error_code = "task_not_found"

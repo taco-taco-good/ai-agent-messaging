@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from agent_messaging.application.command_router import CommandRouter
+from agent_messaging.services.command_router import CommandRouter
 from agent_messaging.core.errors import InteractionValidationError
 from agent_messaging.core.interfaces import (
     AgentRegistryProtocol,
@@ -14,7 +14,7 @@ from agent_messaging.core.interfaces import (
 from agent_messaging.core.models import ModelOption
 from agent_messaging.runtime.transport import chunk_text
 from agent_messaging.observability.context import log_context
-from agent_messaging.services.interactions import PendingInteractionStore
+from agent_messaging.runtime.interactions import PendingInteractionStore
 
 
 logger = logging.getLogger(__name__)

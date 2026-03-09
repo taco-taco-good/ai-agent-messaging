@@ -33,4 +33,5 @@ packages = [
   "agent_messaging.providers",
   "agent_messaging.runtime",
   "agent_messaging.services",
+  "agent_messaging.tasks",
 ]

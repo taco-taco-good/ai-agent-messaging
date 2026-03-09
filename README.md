@@ -20,6 +20,8 @@
 - 채널별 세션 유지: Discord DM/채널 단위로 대화 세션 관리
 - 영구 메모리: 날짜별 markdown 파일에 대화와 메타데이터 저장
 - 에이전트 페르소나: agent별 persona markdown 파일 지원
+- task scheduler: YAML task 문서와 SQLite 상태 저장 기반의 주기 작업 실행
+- task runtime: 제한된 step type과 tool 목록으로 반선언형 workflow 실행
 - 모델 전환: Discord `/model`로 provider별 모델 카탈로그 선택
 - 안정성: watchdog, 자동 재시작, 유휴 wrapper 정리
 
@@ -31,6 +33,8 @@ Discord Gateway  ->  Application Layer  ->  Provider Wrapper  ->  CLI Process
      |                    +-> Session Manager    +-> claude / codex / gemini
      |                    +-> Memory Writer
      |                    +-> Runtime Tools
+     |                    +-> Task Scheduler
+     |                    +-> Task Runner
      v
  Discord API
 ```
@@ -82,6 +86,9 @@ TTY 환경이 아니거나 plain prompt가 필요하면:
 ### 3. 생성되는 설정 예시
 
 ```yaml
+tasks_dir: ./tasks
+task_store_path: ../runtime/tasks.sqlite
+
 agents:
   codex:
     display_name: codex
@@ -107,6 +114,8 @@ agents:
 | `workspace_dir` | 실제 CLI 실행 작업 디렉터리 |
 | `memory_dir` | 대화 메모리 저장 디렉터리 |
 | `cli_args` | provider CLI에 추가로 넘길 인자 |
+| `tasks_dir` | YAML task 문서를 읽어올 디렉터리 |
+| `task_store_path` | task/scheduler 상태를 저장할 SQLite 파일 경로 |
 
 ### 5. 페르소나 작성
 
@@ -202,6 +211,22 @@ memory/
 
 메타데이터는 현재 추가 모델 호출 없이 로컬 규칙 기반으로 생성됩니다.
 
+## Task 시스템
+
+정기 브리핑 같은 백그라운드 작업은 `config/tasks/*.yaml` 아래의 task 문서로 정의할 수 있습니다.
+
+- `core`는 scheduler, runner, 상태 저장, delivery를 담당
+- `tool`은 agent가 호출하는 개별 기능을 담당
+- `task`는 tool들을 어떤 순서와 규칙으로 사용할지 정의하는 workflow 문서입니다
+
+task는 완전 자유 코드가 아니라 제한된 DSL입니다.
+
+- 허용된 step type만 사용: `load`, `filter`, `validate`, `enrich`, `generate`, `deliver`, `persist`
+- 허용된 tool만 사용
+- 실행 상태는 SQLite에 기록
+
+자세한 형식은 `docs/tasks.md`를 참고하세요.
+
 ## 프로젝트 구조
 
 ```text
@@ -217,7 +242,9 @@ ai-agent-messaging/
 ├── workspace/          # 실제 provider 작업 디렉터리
 ├── docs/
 │   ├── plans.md
-│   └── architecture.md
+│   ├── architecture.md
+│   └── tasks.md
+├── src/tasks/          # task loader, registry, runner, scheduler
 ├── src/
 │   └── agent_messaging/
 │       ├── application/
