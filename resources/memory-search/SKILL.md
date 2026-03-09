@@ -36,16 +36,3 @@ python3 scripts/search_memory.py --memory-dir <memory_dir> --query "<query>" --t
 4. Add `--date-from` and `--date-to` when the user constrains the time range.
 5. Answer with the most relevant result, including the file path and snippet when useful.
 6. If no result is found, say that memory search did not find relevant history.
-
-## Examples
-
-```bash
-python3 scripts/search_memory.py --memory-dir /repo/memory/gemini --query "architecture decision"
-python3 scripts/search_memory.py --memory-dir /repo/memory/codex --query "token" --tag architecture --top-k 3
-python3 scripts/search_memory.py --memory-dir /repo/memory/claude --query "pricing" --date-from 2026-03-01 --date-to 2026-03-08
-```
-
-## Output
-
-- Default output is a readable ranked list with `path`, `topic`, `summary`, `snippet`, and `score`.
-- Use `--json` when structured output is easier to process.

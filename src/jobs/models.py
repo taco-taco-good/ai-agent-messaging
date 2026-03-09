@@ -18,14 +18,14 @@ ALLOWED_STEP_TYPES = {
 
 
 @dataclass(frozen=True)
-class TaskSchedule:
+class JobSchedule:
     kind: str
     expr: str
     timezone: str = "UTC"
 
 
 @dataclass(frozen=True)
-class TaskStep:
+class JobStep:
     id: str
     type: str
     tool: str
@@ -34,27 +34,28 @@ class TaskStep:
 
 
 @dataclass(frozen=True)
-class TaskOutput:
+class JobOutput:
     channel_id: Optional[str] = None
     artifact_path: Optional[str] = None
 
 
 @dataclass(frozen=True)
-class TaskDefinition:
+class JobDefinition:
     id: str
     description: str
     agent_id: str
     enabled: bool
-    schedule: TaskSchedule
+    schedule: JobSchedule
     allowed_tools: List[str]
-    steps: List[TaskStep]
-    output: TaskOutput = field(default_factory=TaskOutput)
+    steps: List[JobStep]
+    output: JobOutput = field(default_factory=JobOutput)
+    skill_id: Optional[str] = None
     source_path: Optional[Path] = None
 
 
 @dataclass(frozen=True)
-class TaskRunSummary:
-    task_id: str
+class JobRunSummary:
+    job_id: str
     run_id: int
     status: str
     started_at: datetime

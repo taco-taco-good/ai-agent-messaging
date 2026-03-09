@@ -85,21 +85,21 @@ class AgentMessagingAppTests(unittest.IsolatedAsyncioTestCase):
         )
         self.root = root
 
-    async def test_register_task_delegates_to_task_runtime(self) -> None:
+    async def test_register_job_delegates_to_job_runtime(self) -> None:
         class FakeTaskRuntime:
             def __init__(self) -> None:
                 self.registered = None
 
-            def register_task(self, task) -> None:
-                self.registered = task
+            def register_job(self, job) -> None:
+                self.registered = job
 
         fake_runtime = FakeTaskRuntime()
-        self.app.task_runtime = fake_runtime
-        task = object()
+        self.app.job_runtime = fake_runtime
+        job = object()
 
-        self.app.register_task(task)
+        self.app.register_job(job)
 
-        self.assertIs(fake_runtime.registered, task)
+        self.assertIs(fake_runtime.registered, job)
 
     async def asyncTearDown(self) -> None:
         self.tempdir.cleanup()
@@ -126,8 +126,8 @@ class AgentMessagingAppTests(unittest.IsolatedAsyncioTestCase):
         init_doc = self.root / "workspace" / "reviewer" / "AGENTS.md"
         self.assertTrue(init_doc.exists())
         init_doc_text = init_doc.read_text(encoding="utf-8")
-        self.assertIn("tools/memory-search/SKILL.md", init_doc_text)
-        self.assertIn("tools/memory-search/scripts/search_memory.py", init_doc_text)
+        self.assertIn("resources/memory-search/SKILL.md", init_doc_text)
+        self.assertIn("resources/memory-search/scripts/search_memory.py", init_doc_text)
 
         memory_files = sorted((self.root / "memory" / "reviewer").rglob("conversation_*.md"))
         self.assertEqual(len(memory_files), 1)

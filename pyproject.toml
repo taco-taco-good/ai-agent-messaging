@@ -20,6 +20,9 @@ discord = [
 [project.scripts]
 agent-messaging = "agent_messaging.application.app:main"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.setuptools]
 package-dir = {"agent_messaging" = "src"}
 packages = [
@@ -28,10 +31,12 @@ packages = [
   "agent_messaging.config",
   "agent_messaging.core",
   "agent_messaging.gateway",
+  "agent_messaging.jobs",
   "agent_messaging.memory",
   "agent_messaging.observability",
   "agent_messaging.providers",
   "agent_messaging.runtime",
   "agent_messaging.services",
-  "agent_messaging.tasks",
+  "agent_messaging.skills",
+  "agent_messaging.tools",
 ]

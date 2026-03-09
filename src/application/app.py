@@ -18,6 +18,7 @@ from agent_messaging.memory.init_docs import materialize_init_doc
 from agent_messaging.memory.metadata import MetadataGenerator
 from agent_messaging.memory.search import MemorySearchTool
 from agent_messaging.memory.writer import MemoryWriter
+from agent_messaging.jobs import JobRegistry, JobRuntime, JobScheduler, JobStore, load_jobs
 from agent_messaging.observability.logging import setup_logging
 from agent_messaging.providers.factory import create_provider
 from agent_messaging.runtime.delivery import DeliveryRuntime
@@ -27,7 +28,8 @@ from agent_messaging.runtime.session_manager import SessionManager
 from agent_messaging.runtime.session_store import SessionStore
 from agent_messaging.runtime.tools import ToolRuntime
 from agent_messaging.services import MessagingService
-from agent_messaging.tasks import TaskRegistry, TaskRuntime, TaskScheduler, TaskStore, load_tasks
+from agent_messaging.skills import load_skills
+from agent_messaging.tools import load_external_tools
 
 
 logger = logging.getLogger(__name__)
@@ -45,7 +47,7 @@ class AgentMessagingApp:
         tool_runtime: Optional[ToolRuntimeProtocol] = None,
         metadata_generator: Optional[MetadataGeneratorProtocol] = None,
         chunk_limit: int = 2000,
-        task_runtime: Optional[TaskRuntime] = None,
+        job_runtime: Optional[JobRuntime] = None,
         delivery_runtime: Optional[DeliveryRuntime] = None,
     ) -> None:
         if service is None:
@@ -77,8 +79,8 @@ class AgentMessagingApp:
         self.provider_factory = service.provider_runtime.provider_factory
         self._provider_runtime = service.provider_runtime
         self._pending_interactions = service.pending_interactions
-        self.task_runtime = task_runtime
-        self._task_scheduler: Optional[TaskScheduler] = None
+        self.job_runtime = job_runtime
+        self._job_scheduler: Optional[JobScheduler] = None
 
     async def handle_user_message(self, *args, **kwargs):
         return await self.service.handle_user_message(*args, **kwargs)
@@ -99,28 +101,28 @@ class AgentMessagingApp:
         return await self.service.available_model_options(*args, **kwargs)
 
     async def shutdown(self) -> None:
-        if self._task_scheduler is not None:
-            await self._task_scheduler.shutdown()
+        if self._job_scheduler is not None:
+            await self._job_scheduler.shutdown()
         await self.service.shutdown()
 
-    async def run_task(self, task_id: str):
-        if self.task_runtime is None:
-            raise RuntimeError("Task runtime is not configured.")
-        return await self.task_runtime.run_task(task_id)
+    async def run_job(self, job_id: str):
+        if self.job_runtime is None:
+            raise RuntimeError("Job runtime is not configured.")
+        return await self.job_runtime.run_job(job_id)
 
-    def register_task(self, task) -> None:
-        if self.task_runtime is None:
-            raise RuntimeError("Task runtime is not configured.")
-        self.task_runtime.register_task(task)
+    def register_job(self, job) -> None:
+        if self.job_runtime is None:
+            raise RuntimeError("Job runtime is not configured.")
+        self.job_runtime.register_job(job)
 
     def register_channel_sender(self, agent_id: str, sender) -> None:
-        if self.task_runtime is not None:
-            self.task_runtime.register_delivery_sender(agent_id, sender)
+        if self.job_runtime is not None:
+            self.job_runtime.register_delivery_sender(agent_id, sender)
 
     def start_background_tasks(self) -> None:
         self._provider_runtime.start_watchdog()
-        if self._task_scheduler is not None:
-            self._task_scheduler.start()
+        if self._job_scheduler is not None:
+            self._job_scheduler.start()
 
     @property
     def _wrappers(self):
@@ -149,6 +151,7 @@ def build_app(config_path: Path) -> AgentMessagingApp:
     session_manager = SessionManager(session_store)
     tool_runtime = ToolRuntime()
     AgentMessagingApp._initialize_agents(registry=registry, tool_runtime=tool_runtime)
+    load_external_tools(settings.tools_dir, tool_runtime)
     provider_runtime = ProviderRuntime(
         session_manager=session_manager,
         provider_factory=create_provider,
@@ -160,24 +163,26 @@ def build_app(config_path: Path) -> AgentMessagingApp:
         tool_runtime=tool_runtime,
         pending_interactions=PendingInteractionStore(),
     )
-    tasks = load_tasks(settings.tasks_dir)
-    task_registry = TaskRegistry(tasks)
+    jobs = load_jobs(settings.jobs_dir)
+    skills = load_skills(settings.skills_dir)
+    job_registry = JobRegistry(jobs)
     delivery_runtime = DeliveryRuntime()
-    task_runtime = TaskRuntime(
-        registry=task_registry,
+    job_runtime = JobRuntime(
+        registry=job_registry,
         tool_runtime=tool_runtime,
-        store=TaskStore(settings.task_store_path),
+        store=JobStore(settings.job_store_path),
         agent_registry=registry,
         provider_factory=create_provider,
         delivery_runtime=delivery_runtime,
         runtime_dir=settings.runtime_dir,
+        skills=skills,
     )
     app = AgentMessagingApp(
         service,
-        task_runtime=task_runtime,
+        job_runtime=job_runtime,
         delivery_runtime=delivery_runtime,
     )
-    app._task_scheduler = TaskScheduler(task_registry, task_runtime)
+    app._job_scheduler = JobScheduler(job_registry, job_runtime)
     return app
 
 
