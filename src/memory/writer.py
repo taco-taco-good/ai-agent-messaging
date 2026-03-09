@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 import os
 from pathlib import Path
+import re
 from threading import Lock
 from typing import Iterable, Optional, Tuple
 
@@ -12,6 +13,7 @@ from agent_messaging.core.models import FrontmatterMetadata
 
 
 logger = logging.getLogger(__name__)
+_SAFE_MEMORY_SLUG = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
 class MemoryWriter:
@@ -30,7 +32,7 @@ class MemoryWriter:
         metadata: Optional[FrontmatterMetadata] = None,
         timestamp: Optional[datetime] = None,
     ) -> Path:
-        timestamp = timestamp or datetime.utcnow()
+        timestamp = timestamp or datetime.now(timezone.utc)
         day_dir = memory_dir / timestamp.strftime("%Y-%m-%d")
         day_dir.mkdir(parents=True, exist_ok=True)
 
@@ -53,6 +55,43 @@ class MemoryWriter:
         logger.info("memory_appended", extra={"path": str(path), "role": role})
         return path
 
+    def write_task_run(
+        self,
+        *,
+        agent_id: str,
+        display_name: str,
+        memory_dir: Path,
+        task_id: str,
+        run_id: int,
+        content: str,
+        status: str,
+        metadata: Optional[FrontmatterMetadata] = None,
+        timestamp: Optional[datetime] = None,
+    ) -> Path:
+        timestamp = timestamp or datetime.now(timezone.utc)
+        safe_task_id = self._validate_slug(task_id, label="task_id")
+        day_dir = memory_dir / "tasks" / safe_task_id / timestamp.strftime("%Y-%m-%d")
+        day_dir.mkdir(parents=True, exist_ok=True)
+
+        with self._lock:
+            path = self._select_prefixed_file(day_dir, prefix="run")
+            merged = {
+                "date": timestamp.strftime("%Y-%m-%d"),
+                "agent": agent_id,
+                "display_name": display_name,
+                "record_type": "task_run",
+                "task_id": safe_task_id,
+                "run_id": run_id,
+                "status": status,
+                "tags": list(metadata.tags) if metadata is not None else [],
+                "topic": metadata.topic if metadata is not None else safe_task_id,
+                "summary": metadata.summary if metadata is not None else "",
+            }
+            normalized = content.rstrip() + "\n"
+            self._write_document(path, render_document(merged, normalized))
+        logger.info("task_memory_written", extra={"path": str(path), "task_id": safe_task_id})
+        return path
+
     def _select_file(self, day_dir: Path) -> Path:
         candidates = sorted(day_dir.glob("conversation_*.md"))
         if not candidates:
@@ -64,6 +103,11 @@ class MemoryWriter:
             next_index = len(candidates) + 1
             return day_dir / "conversation_{0:03d}.md".format(next_index)
         return current
+
+    def _select_prefixed_file(self, day_dir: Path, *, prefix: str) -> Path:
+        candidates = sorted(day_dir.glob("{0}_*.md".format(prefix)))
+        next_index = len(candidates) + 1
+        return day_dir / "{0}_{1:03d}.md".format(prefix, next_index)
 
     def _read_document(self, path: Path) -> Tuple[dict, str]:
         if not path.exists():
@@ -117,3 +161,10 @@ class MemoryWriter:
             role,
             normalized,
         )
+
+    def _validate_slug(self, value: str, *, label: str) -> str:
+        if not _SAFE_MEMORY_SLUG.fullmatch(value):
+            raise ValueError(
+                "Invalid {0} `{1}`. Use lowercase slug, digits, `_`, `-`.".format(label, value)
+            )
+        return value

@@ -10,6 +10,8 @@ from typing import Any, Dict, Optional
 
 from agent_messaging.core.errors import AgentMessagingError, ToolNotFoundError
 from agent_messaging.config.registry import AgentRegistry
+from agent_messaging.core.models import FrontmatterMetadata
+from agent_messaging.memory.writer import MemoryWriter
 from agent_messaging.providers.base import CLIWrapper
 from agent_messaging.runtime.delivery import DeliveryRuntime
 from agent_messaging.runtime.tools import ToolRuntime
@@ -35,6 +37,7 @@ class TaskRuntime:
         agent_registry: Optional[AgentRegistry] = None,
         provider_factory: Optional[Any] = None,
         delivery_runtime: Optional[DeliveryRuntime] = None,
+        memory_writer: Optional[MemoryWriter] = None,
         runtime_dir: Optional[Path] = None,
     ) -> None:
         self.registry = registry
@@ -43,6 +46,7 @@ class TaskRuntime:
         self.agent_registry = agent_registry
         self.provider_factory = provider_factory
         self.delivery_runtime = delivery_runtime or DeliveryRuntime()
+        self.memory_writer = memory_writer or MemoryWriter()
         self.runtime_dir = runtime_dir or Path.cwd()
         self._locks: Dict[str, asyncio.Lock] = {}
         self._register_builtin_tools()
@@ -123,6 +127,7 @@ class TaskRuntime:
         self.tool_runtime.register("task.run_agent_prompt", self._tool_run_agent_prompt)
         self.tool_runtime.register("task.send_discord_message", self._tool_send_discord_message)
         self.tool_runtime.register("task.persist_text", self._tool_persist_text)
+        self.tool_runtime.register("task.persist_memory", self._tool_persist_memory)
 
     def _should_run(self, when: Optional[str], context: Dict[str, Any]) -> bool:
         if not when:
@@ -234,3 +239,39 @@ class TaskRuntime:
         path.parent.mkdir(parents=True, exist_ok=True)
         await asyncio.to_thread(path.write_text, str(content), encoding="utf-8")
         return {"path": str(path)}
+
+    async def _tool_persist_memory(self, params: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+        if self.agent_registry is None:
+            raise TaskExecutionError("Memory persistence requires agent registry.")
+        agent = self.agent_registry.get(str(context["task"]["agent_id"]))
+        content = params.get("content")
+        if content is None:
+            raise TaskExecutionError("Memory persistence requires `content`.")
+
+        raw_tags = params.get("tags") or ["task", str(context["task"]["id"])]
+        if not isinstance(raw_tags, list):
+            raise TaskExecutionError("Memory persistence `tags` must be a list.")
+        tags = [str(tag) for tag in raw_tags]
+        topic = str(params.get("topic") or context["task"]["description"] or context["task"]["id"])
+        summary = str(params.get("summary") or "")
+        status = str(params.get("status") or "succeeded")
+        task_id = str(params.get("task_id") or context["task"]["id"])
+        timestamp = datetime.fromisoformat(str(context["now"]))
+
+        path = await asyncio.to_thread(
+            self.memory_writer.write_task_run,
+            agent_id=agent.agent_id,
+            display_name=agent.display_name or agent.agent_id,
+            memory_dir=agent.memory_dir,
+            task_id=task_id,
+            run_id=int(context["run"]["id"]),
+            content=str(content),
+            status=status,
+            metadata=FrontmatterMetadata(
+                tags=tags,
+                topic=topic,
+                summary=summary,
+            ),
+            timestamp=timestamp,
+        )
+        return {"path": str(path), "task_id": task_id}

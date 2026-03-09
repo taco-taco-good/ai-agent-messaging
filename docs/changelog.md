@@ -6,6 +6,7 @@
 - YAML 기반 task DSL과 `TaskRuntime`, `TaskScheduler`, `TaskStore`를 추가했습니다.
 - task 실행 상태를 저장하는 SQLite 기반 `tasks.sqlite` 저장소를 추가했습니다.
 - `task.noop`, `task.sqlite_query`, `task.render_template`, `task.run_agent_prompt`, `task.send_discord_message`, `task.persist_text` built-in tool을 추가했습니다.
+- `task.persist_memory` built-in tool을 추가했습니다.
 - task 시스템 사용법과 DSL 예시를 담은 `docs/tasks.md`를 추가했습니다.
 
 ### Changed
@@ -14,6 +15,7 @@
 - `ProviderRuntime`, `PendingInteractionStore`, `DeliveryRuntime`를 `runtime` 계층으로 이동했습니다.
 - `CommandRouter`를 `services` 계층으로 이동했습니다.
 - 앱 부팅 시 task 문서를 로드하고 scheduler를 시작하도록 확장했습니다.
+- task가 선택적으로 기존 memory system 아래 `tasks/<task_id>/...` 구조에 실행 기록을 남길 수 있게 확장했습니다.
 - `README.md`, `docs/architecture.md`, `setup/agents.yaml.template`를 새 task/runtime 구조에 맞게 갱신했습니다.
 
 ### Tests
