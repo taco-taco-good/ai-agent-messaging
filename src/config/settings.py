@@ -24,8 +24,10 @@ logger = logging.getLogger(__name__)
 class AppSettings:
     agents: Dict[str, AgentConfig]
     runtime_dir: Path
-    tasks_dir: Path
-    task_store_path: Path
+    jobs_dir: Path
+    skills_dir: Path
+    tools_dir: Path
+    job_store_path: Path
 
 
 def load_settings(config_path: Path) -> AppSettings:
@@ -72,13 +74,20 @@ def load_settings(config_path: Path) -> AppSettings:
         )
 
     runtime_dir = _resolve_path(base_dir, raw.get("runtime_dir", "../runtime"))
-    tasks_dir = _resolve_path(base_dir, raw.get("tasks_dir", "./tasks"))
-    task_store_path = _resolve_path(base_dir, raw.get("task_store_path", "../runtime/tasks.sqlite"))
+    jobs_dir = _resolve_path(base_dir, raw.get("jobs_dir", "../jobs"))
+    skills_dir = _resolve_path(base_dir, raw.get("skills_dir", "../skills"))
+    tools_dir = _resolve_path(base_dir, raw.get("tools_dir", "../tools"))
+    job_store_path = _resolve_path(
+        base_dir,
+        raw.get("job_store_path", "../runtime/jobs.sqlite"),
+    )
     return AppSettings(
         agents=agents,
         runtime_dir=runtime_dir,
-        tasks_dir=tasks_dir,
-        task_store_path=task_store_path,
+        jobs_dir=jobs_dir,
+        skills_dir=skills_dir,
+        tools_dir=tools_dir,
+        job_store_path=job_store_path,
     )
 
 

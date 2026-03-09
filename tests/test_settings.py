@@ -47,5 +47,7 @@ class SettingsTests(unittest.TestCase):
                 (root / "workspace" / "reviewer").resolve(),
             )
             self.assertEqual(settings.runtime_dir, (root / "runtime").resolve())
-            self.assertEqual(settings.tasks_dir, (root / "config" / "tasks").resolve())
-            self.assertEqual(settings.task_store_path, (root / "runtime" / "tasks.sqlite").resolve())
+            self.assertEqual(settings.jobs_dir, (root / "jobs").resolve())
+            self.assertEqual(settings.skills_dir, (root / "skills").resolve())
+            self.assertEqual(settings.tools_dir, (root / "tools").resolve())
+            self.assertEqual(settings.job_store_path, (root / "runtime" / "jobs.sqlite").resolve())

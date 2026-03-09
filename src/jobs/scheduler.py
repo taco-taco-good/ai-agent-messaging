@@ -5,19 +5,19 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from agent_messaging.tasks.cron import CronExpression
-from agent_messaging.tasks.registry import TaskRegistry
-from agent_messaging.tasks.runtime import TaskRuntime
+from agent_messaging.jobs.cron import CronExpression
+from agent_messaging.jobs.registry import JobRegistry
+from agent_messaging.jobs.runtime import JobRuntime
 
 
 logger = logging.getLogger(__name__)
 
 
-class TaskScheduler:
+class JobScheduler:
     def __init__(
         self,
-        registry: TaskRegistry,
-        runtime: TaskRuntime,
+        registry: JobRegistry,
+        runtime: JobRuntime,
         *,
         poll_interval: float = 30.0,
     ) -> None:
@@ -29,8 +29,8 @@ class TaskScheduler:
     def start(self) -> None:
         if self._task is not None and not self._task.done():
             return
-        self._task = asyncio.create_task(self._loop(), name="task_scheduler")
-        logger.info("task_scheduler_started", extra={"poll_interval": self.poll_interval})
+        self._task = asyncio.create_task(self._loop(), name="job_scheduler")
+        logger.info("job_scheduler_started", extra={"poll_interval": self.poll_interval})
 
     async def shutdown(self) -> None:
         if self._task is None:
@@ -44,12 +44,12 @@ class TaskScheduler:
 
     async def run_pending(self, when: Optional[datetime] = None) -> None:
         current = when or datetime.now(timezone.utc)
-        for task in self.registry.all():
-            if not task.enabled or task.schedule.kind != "cron":
+        for job in self.registry.all():
+            if not job.enabled or job.schedule.kind != "cron":
                 continue
-            cron = CronExpression.parse(task.schedule.expr, timezone=task.schedule.timezone)
+            cron = CronExpression.parse(job.schedule.expr, timezone=job.schedule.timezone)
             if cron.matches(current):
-                await self.runtime.run_task(task.id, scheduled_for=cron.slot_for(current), trigger="schedule")
+                await self.runtime.run_job(job.id, scheduled_for=cron.slot_for(current), trigger="schedule")
 
     async def _loop(self) -> None:
         while True:
@@ -57,7 +57,7 @@ class TaskScheduler:
                 await self.run_pending()
                 await asyncio.sleep(self.poll_interval)
             except asyncio.CancelledError:
-                logger.info("task_scheduler_stopped")
+                logger.info("job_scheduler_stopped")
                 return
             except Exception:
-                logger.exception("task_scheduler_error")
+                logger.exception("job_scheduler_error")

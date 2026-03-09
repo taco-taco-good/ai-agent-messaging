@@ -115,21 +115,21 @@ class MemoryWriterTests(unittest.TestCase):
             document = (root / "2026-03-07" / "conversation_001.md").read_text(encoding="utf-8")
             self.assertLess(document.find("one"), document.find("two"))
 
-    def test_writer_persists_task_run_under_task_scoped_path(self) -> None:
+    def test_writer_persists_job_run_under_job_scoped_path(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir)
             writer = MemoryWriter()
 
-            path = writer.write_task_run(
+            path = writer.write_job_run(
                 agent_id="codex",
                 display_name="codex",
                 memory_dir=root,
-                task_id="daily_ai_briefing",
+                job_id="daily_ai_briefing",
                 run_id=7,
                 content="briefing body",
                 status="succeeded",
                 metadata=FrontmatterMetadata(
-                    tags=["task", "briefing"],
+                    tags=["job", "briefing"],
                     topic="daily ai briefing",
                     summary="Generated daily briefing.",
                 ),
@@ -138,9 +138,9 @@ class MemoryWriterTests(unittest.TestCase):
 
             self.assertEqual(
                 path,
-                root / "tasks" / "daily_ai_briefing" / "2026-03-09" / "run_001.md",
+                root / "jobs" / "daily_ai_briefing" / "2026-03-09" / "run_001.md",
             )
             document = path.read_text(encoding="utf-8")
-            self.assertIn("record_type: task_run", document)
+            self.assertIn("record_type: job_run", document)
             self.assertIn("run_id: 7", document)
             self.assertIn("briefing body", document)

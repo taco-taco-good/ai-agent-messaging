@@ -8,9 +8,9 @@ from agent_messaging.core.models import AgentConfig
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-MEMORY_SEARCH_SKILL_PATH = PROJECT_ROOT / "tools" / "memory-search" / "SKILL.md"
+MEMORY_SEARCH_SKILL_PATH = PROJECT_ROOT / "resources" / "memory-search" / "SKILL.md"
 MEMORY_SEARCH_SCRIPT_PATH = (
-    PROJECT_ROOT / "tools" / "memory-search" / "scripts" / "search_memory.py"
+    PROJECT_ROOT / "resources" / "memory-search" / "scripts" / "search_memory.py"
 )
 
 

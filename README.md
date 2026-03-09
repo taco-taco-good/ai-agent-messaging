@@ -20,8 +20,9 @@
 - 채널별 세션 유지: Discord DM/채널 단위로 대화 세션 관리
 - 영구 메모리: 날짜별 markdown 파일에 대화와 메타데이터 저장
 - 에이전트 페르소나: agent별 persona markdown 파일 지원
-- task scheduler: YAML task 문서와 SQLite 상태 저장 기반의 주기 작업 실행
-- task runtime: 제한된 step type과 tool 목록으로 반선언형 workflow 실행
+- job scheduler: YAML job 문서와 SQLite 상태 저장 기반의 주기 작업 실행
+- job runtime: 제한된 step type과 tool 목록으로 백그라운드 job 실행
+- skill loader: agent가 읽는 markdown skill 문서 로드
 - 모델 전환: Discord `/model`로 provider별 모델 카탈로그 선택
 - 안정성: watchdog, 자동 재시작, 유휴 wrapper 정리
 
@@ -33,8 +34,9 @@ Discord Gateway  ->  Application Layer  ->  Provider Wrapper  ->  CLI Process
      |                    +-> Session Manager    +-> claude / codex / gemini
      |                    +-> Memory Writer
      |                    +-> Runtime Tools
-     |                    +-> Task Scheduler
-     |                    +-> Task Runner
+     |                    +-> Job Scheduler
+     |                    +-> Job Runtime
+     |                    +-> Skill Loader
      v
  Discord API
 ```
@@ -86,8 +88,10 @@ TTY 환경이 아니거나 plain prompt가 필요하면:
 ### 3. 생성되는 설정 예시
 
 ```yaml
-tasks_dir: ./tasks
-task_store_path: ../runtime/tasks.sqlite
+jobs_dir: ../jobs
+skills_dir: ../skills
+tools_dir: ../tools
+job_store_path: ../runtime/jobs.sqlite
 
 agents:
   codex:
@@ -114,8 +118,10 @@ agents:
 | `workspace_dir` | 실제 CLI 실행 작업 디렉터리 |
 | `memory_dir` | 대화 메모리 저장 디렉터리 |
 | `cli_args` | provider CLI에 추가로 넘길 인자 |
-| `tasks_dir` | YAML task 문서를 읽어올 디렉터리 |
-| `task_store_path` | task/scheduler 상태를 저장할 SQLite 파일 경로 |
+| `jobs_dir` | YAML job 문서를 읽어올 디렉터리 |
+| `skills_dir` | agent가 읽는 markdown skill 문서를 읽어올 디렉터리 |
+| `tools_dir` | external tool manifest와 실행 스크립트를 읽어올 디렉터리 |
+| `job_store_path` | job/scheduler 상태를 저장할 SQLite 파일 경로 |
 
 ### 5. 페르소나 작성
 
@@ -211,21 +217,46 @@ memory/
 
 메타데이터는 현재 추가 모델 호출 없이 로컬 규칙 기반으로 생성됩니다.
 
-## Task 시스템
+## Job / Skill / Tool 시스템
 
-정기 브리핑 같은 백그라운드 작업은 `config/tasks/*.yaml` 아래의 task 문서로 정의할 수 있습니다.
+사용자 자산은 프로젝트 루트에 둡니다.
 
-- `core`는 scheduler, runner, 상태 저장, delivery를 담당
-- `tool`은 agent가 호출하는 개별 기능을 담당
-- `task`는 tool들을 어떤 순서와 규칙으로 사용할지 정의하는 workflow 문서입니다
+```text
+jobs/     # system이 읽는 background job 정의
+skills/   # agent가 읽는 skill 문서
+tools/    # external tool manifest + 실행 스크립트
+```
 
-task는 완전 자유 코드가 아니라 제한된 DSL입니다.
+이 세 디렉토리는 로컬 사용자 정의 영역이라 기본적으로 git 추적 대상이 아닙니다. 저장소에는 샘플만 `examples/` 아래에 둡니다.
+
+- job 예시: `examples/jobs/daily_ai_briefing.yaml`
+- skill 예시: `examples/skills/daily_ai_briefing.md`
+
+- `job`: 시스템이 시작하는 백그라운드 실행 정의
+- `skill`: agent가 직접 읽는 작업 지침 문서
+- `tool`: agent와 job runtime이 호출하는 도구
+
+엔진 내부 모듈은 별도로 유지합니다.
+
+- `src/jobs`: job registry, scheduler, runtime, store
+- `src/skills`: skill loader와 모델
+- `src/tools`: internal built-in tool 등록과 external tool loader
+- `src/runtime/tools.py`: tool registry와 invocation runtime
+
+external tool은 `tools/<tool-id>/tool.yaml` manifest로 등록합니다. 현재 지원 필드는 `id`, `capabilities`, `entry.command`, `timeout_seconds` 이고, timeout 기본값은 60초입니다.
+
+- `tool`: agent와 job runtime이 호출하는 개별 기능
+- `job`: 시스템이 시작하는 백그라운드 실행 정의
+- `skill`: agent가 읽는 markdown 작업 지침
+
+현재 `job`은 제한된 DSL을 사용합니다.
 
 - 허용된 step type만 사용: `load`, `filter`, `validate`, `enrich`, `generate`, `deliver`, `persist`
 - 허용된 tool만 사용
 - 실행 상태는 SQLite에 기록
+- 선택적으로 연결된 `skill` 본문을 `job.run_agent_prompt` 단계에서 agent prompt 앞에 주입할 수 있습니다
 
-자세한 형식은 `docs/tasks.md`를 참고하세요.
+자세한 형식은 `docs/tasks.md`를 참고하세요. 문서 파일명은 아직 유지하지만 내용은 `job/skill` 기준으로 갱신되었습니다.
 
 ## 프로젝트 구조
 
@@ -237,6 +268,15 @@ ai-agent-messaging/
 │   ├── init.sh
 │   └── status.py
 ├── config/             # 로컬 설정, persona 파일
+│   └── personas/
+├── jobs/               # user-defined background job YAML
+├── skills/             # user-defined agent skill markdown
+├── tools/              # user-defined external tool manifests/scripts
+├── examples/
+│   ├── jobs/
+│   └── skills/
+├── resources/
+│   └── memory-search/
 ├── runtime/            # 세션 상태 저장
 ├── memory/             # 대화 메모리 저장
 ├── workspace/          # 실제 provider 작업 디렉터리
@@ -244,18 +284,19 @@ ai-agent-messaging/
 │   ├── plans.md
 │   ├── architecture.md
 │   └── tasks.md
-├── src/tasks/          # task loader, registry, runner, scheduler
 ├── src/
-│   └── agent_messaging/
-│       ├── application/
-│       ├── config/
-│       ├── core/
-│       ├── gateway/
-│       ├── memory/
-│       ├── observability/
-│       ├── providers/
-│       ├── runtime/
-│       └── services/
+│   ├── application/
+│   ├── config/
+│   ├── core/
+│   ├── gateway/
+│   ├── jobs/
+│   ├── memory/
+│   ├── observability/
+│   ├── providers/
+│   ├── runtime/
+│   ├── services/
+│   ├── skills/
+│   └── tools/
 ├── tests/
 └── pyproject.toml
 ```

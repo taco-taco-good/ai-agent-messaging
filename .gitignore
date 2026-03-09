@@ -19,6 +19,13 @@ build/
 dist/
 *.egg-info/
 
+/jobs/*
+!/jobs/.gitkeep
+/skills/*
+!/skills/.gitkeep
+/tools/*
+!/tools/.gitkeep
+
 /config/
 /agents.yaml
 /runtime/

@@ -66,13 +66,19 @@ Discord API
 5. `Storage Layer`
    - `sessions.json`: live session SSOT
    - markdown memory store: long-term conversation memory
-   - `tasks.sqlite`: task/scheduler run state SSOT
+   - `jobs.sqlite`: job/scheduler run state SSOT
 
-6. `Task Runtime Layer`
-   - YAML task 문서 로드
-   - schedule 기반 task 실행
-   - task step orchestration
+6. `Job Runtime Layer`
+   - root `jobs/*.yaml` 문서 로드
+   - root `skills/*.md` 문서 로드
+   - schedule 기반 job 실행
+   - job step orchestration
    - Discord delivery와 artifact 저장
+
+7. `Tool Runtime Layer`
+   - internal built-in tool 등록
+   - root `tools/*/tool.yaml` external tool manifest 로드
+   - 동일한 runtime contract로 tool 실행
 
 ## 2. Primary Modules
 
@@ -179,31 +185,42 @@ MVP whitelist:
 
 세부 구성:
 - `ToolRuntime`
+- `src/tools/builtins.py`
+- `src/tools/loader.py`
 - `MemorySearchTool`
 
 규칙:
 - `memory_search`는 provider wrapper 계약에 포함하지 않음
 - wrapper는 tool 실행 결과를 모를 수 있어도 됨
+- internal tool은 엔진이 소유한다
+- external tool은 root `tools/` 아래에서 사용자가 정의한다
 
-### 2.8 Task Runtime Layer
+### 2.8 Job Runtime Layer
 
 책임:
-- `config/tasks/*.yaml` 문서 로드
+- root `jobs/*.yaml` 문서 로드
+- root `skills/*.md` 문서 로드
 - 허용된 step type만 파싱
-- task run state를 SQLite에 저장
-- 일정 시각에 task 실행
-- task가 tool을 순서대로 호출하도록 orchestration
+- job run state를 SQLite에 저장
+- 일정 시각에 job 실행
+- job이 tool을 순서대로 호출하도록 orchestration
+- 연결된 skill 본문을 agent prompt에 주입
 
 구성:
-- `TaskRegistry`
-- `TaskRuntime`
-- `TaskScheduler`
-- `TaskStore`
+- `JobRegistry`
+- `JobRuntime`
+- `JobScheduler`
+- `JobStore`
+- `SkillLoader`
 
 규칙:
-- task는 자유 Python 코드가 아니라 YAML DSL이다
+- job은 자유 Python 코드가 아니라 YAML DSL이다
 - `core`는 orchestration과 state만 담당한다
-- task는 workflow 정의, tool은 개별 기능 단위다
+- `job`은 시스템이 시작하는 실행 정의다
+- `skill`은 agent가 읽는 작업 문서다
+- `tool`은 개별 기능 단위다
+- root `jobs/`, `skills/`, `tools/`는 사용자 자산이며 git 추적 대상이 아니다
+- `src/jobs`, `src/skills`, `src/tools`는 엔진 내부 모듈이다
 
 ### 2.8 Transport Layer
 

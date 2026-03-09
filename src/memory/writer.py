@@ -55,13 +55,13 @@ class MemoryWriter:
         logger.info("memory_appended", extra={"path": str(path), "role": role})
         return path
 
-    def write_task_run(
+    def write_job_run(
         self,
         *,
         agent_id: str,
         display_name: str,
         memory_dir: Path,
-        task_id: str,
+        job_id: str,
         run_id: int,
         content: str,
         status: str,
@@ -69,8 +69,8 @@ class MemoryWriter:
         timestamp: Optional[datetime] = None,
     ) -> Path:
         timestamp = timestamp or datetime.now(timezone.utc)
-        safe_task_id = self._validate_slug(task_id, label="task_id")
-        day_dir = memory_dir / "tasks" / safe_task_id / timestamp.strftime("%Y-%m-%d")
+        safe_job_id = self._validate_slug(job_id, label="job_id")
+        day_dir = memory_dir / "jobs" / safe_job_id / timestamp.strftime("%Y-%m-%d")
         day_dir.mkdir(parents=True, exist_ok=True)
 
         with self._lock:
@@ -79,17 +79,17 @@ class MemoryWriter:
                 "date": timestamp.strftime("%Y-%m-%d"),
                 "agent": agent_id,
                 "display_name": display_name,
-                "record_type": "task_run",
-                "task_id": safe_task_id,
+                "record_type": "job_run",
+                "job_id": safe_job_id,
                 "run_id": run_id,
                 "status": status,
                 "tags": list(metadata.tags) if metadata is not None else [],
-                "topic": metadata.topic if metadata is not None else safe_task_id,
+                "topic": metadata.topic if metadata is not None else safe_job_id,
                 "summary": metadata.summary if metadata is not None else "",
             }
             normalized = content.rstrip() + "\n"
             self._write_document(path, render_document(merged, normalized))
-        logger.info("task_memory_written", extra={"path": str(path), "task_id": safe_task_id})
+        logger.info("job_memory_written", extra={"path": str(path), "job_id": safe_job_id})
         return path
 
     def _select_file(self, day_dir: Path) -> Path:

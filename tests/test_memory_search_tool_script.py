@@ -15,7 +15,7 @@ class MemorySearchToolScriptTests(unittest.TestCase):
     def test_script_returns_ranked_json_results(self) -> None:
         script = (
             Path(__file__).resolve().parents[1]
-            / "tools"
+            / "resources"
             / "memory-search"
             / "scripts"
             / "search_memory.py"

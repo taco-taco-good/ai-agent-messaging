@@ -26,8 +26,14 @@ agents:
     cli_args:
       - <extra-cli-arg>
 
-# 선택 사항: YAML task 문서를 둘 디렉터리입니다.
-tasks_dir: ./tasks
+# 선택 사항: 백그라운드 job YAML 문서를 둘 디렉터리입니다.
+jobs_dir: ../jobs
 
-# 선택 사항: scheduler/task run 상태를 저장할 SQLite 경로입니다.
-task_store_path: ../runtime/tasks.sqlite
+# 선택 사항: agent가 읽는 skill markdown 문서를 둘 디렉터리입니다.
+skills_dir: ../skills
+
+# 선택 사항: 외부 tool manifest와 실행 스크립트를 둘 디렉터리입니다.
+tools_dir: ../tools
+
+# 선택 사항: scheduler/job run 상태를 저장할 SQLite 경로입니다.
+job_store_path: ../runtime/jobs.sqlite
