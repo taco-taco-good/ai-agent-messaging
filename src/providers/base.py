@@ -34,6 +34,24 @@ class ProviderResponseTimeout(ProviderError):
     error_code = "provider_response_timeout"
 
 
+class ProviderStaleSession(ProviderError):
+    """Raised when a persisted provider session cannot be resumed safely."""
+
+    error_code = "provider_stale_session"
+
+
+class ProviderStreamDisconnected(ProviderError):
+    """Raised when a provider stream disconnects before completion."""
+
+    error_code = "provider_stream_disconnected"
+
+
+class ProviderProcessKilled(ProviderError):
+    """Raised when a provider subprocess is terminated unexpectedly."""
+
+    error_code = "provider_process_killed"
+
+
 class CLIWrapper(ABC):
     provider_name = "unknown"
     supported_commands: Iterable[str] = ()

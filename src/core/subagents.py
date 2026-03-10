@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import textwrap
 import uuid
@@ -13,6 +14,9 @@ import yaml
 from agent_messaging.core.errors import AgentMessagingError
 from agent_messaging.core.models import AgentConfig
 from agent_messaging.memory.init_docs import materialize_init_doc
+
+
+logger = logging.getLogger(__name__)
 
 
 class SubagentError(AgentMessagingError):
@@ -135,6 +139,16 @@ class SubagentRuntime:
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         run_id = uuid.uuid4().hex
         root_dir = agent.workspace_dir / ".subagents" / run_id
+        logger.info(
+            "subagent_started",
+            extra={
+                "agent_id": agent.agent_id,
+                "provider": agent.provider,
+                "persona_id": persona.persona_id,
+                "source_format": persona.source_format,
+                "workspace_root": str(root_dir),
+            },
+        )
         try:
             workspace_dir = root_dir / "workspace"
             memory_dir = root_dir / "memory"
@@ -174,10 +188,21 @@ class SubagentRuntime:
                     chunks.append(chunk)
             finally:
                 await wrapper.stop()
+        except Exception:
+            logger.exception(
+                "subagent_failed",
+                extra={
+                    "agent_id": agent.agent_id,
+                    "provider": agent.provider,
+                    "persona_id": persona.persona_id,
+                    "workspace_root": str(root_dir),
+                },
+            )
+            raise
         finally:
             shutil.rmtree(root_dir, ignore_errors=True)
 
-        return {
+        result = {
             "persona_id": persona.persona_id,
             "name": persona.name,
             "description": persona.description,
@@ -187,6 +212,17 @@ class SubagentRuntime:
             "model": child_agent.model or "",
             "workspace_root": str(root_dir),
         }
+        logger.info(
+            "subagent_completed",
+            extra={
+                "agent_id": agent.agent_id,
+                "provider": agent.provider,
+                "persona_id": persona.persona_id,
+                "workspace_root": str(root_dir),
+                "response_length": len(result["response"]),
+            },
+        )
+        return result
 
     def _resolve_skill_paths(self, skills: list[str]) -> list[Path]:
         resolved = []

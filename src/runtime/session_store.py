@@ -5,7 +5,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 
 from agent_messaging.core.models import SessionRecord
 
@@ -44,6 +44,71 @@ class SessionStore:
             self._cache.pop(session_key, None)
             await self._persist()
             logger.info("session_deleted", extra={"session_key": session_key})
+
+    async def delete_where(
+        self,
+        predicate: Callable[[str, SessionRecord], bool],
+        *,
+        reason: str,
+    ) -> list[str]:
+        async with self._lock:
+            await self._ensure_loaded()
+            removed = [
+                session_key
+                for session_key, record in self._cache.items()
+                if predicate(session_key, record)
+            ]
+            if not removed:
+                return []
+            for session_key in removed:
+                record = self._cache.pop(session_key)
+                logger.info(
+                    "startup_session_invalidated",
+                    extra={
+                        "session_key": session_key,
+                        "provider": record.provider,
+                        "provider_session_id": record.provider_session_id,
+                        "reason": reason,
+                    },
+                )
+            await self._persist()
+            return removed
+
+    def delete_where_sync(
+        self,
+        predicate: Callable[[str, SessionRecord], bool],
+        *,
+        reason: str,
+    ) -> list[str]:
+        raw = self._read_json()
+        cache = {
+            session_key: SessionRecord.from_dict(payload)
+            for session_key, payload in raw.items()
+        }
+        removed = [
+            session_key
+            for session_key, record in cache.items()
+            if predicate(session_key, record)
+        ]
+        if not removed:
+            return []
+        for session_key in removed:
+            record = cache.pop(session_key)
+            logger.info(
+                "session_invalidated",
+                extra={
+                    "session_key": session_key,
+                    "provider": record.provider,
+                    "provider_session_id": record.provider_session_id,
+                    "reason": reason,
+                },
+            )
+        payload = {
+            session_key: record.to_dict()
+            for session_key, record in sorted(cache.items())
+        }
+        self._write_json(payload)
+        return removed
 
     async def _ensure_loaded(self) -> None:
         if self._loaded:

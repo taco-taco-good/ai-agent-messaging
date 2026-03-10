@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sys
 import time
+import os
+import signal
 from pathlib import Path
 
 
@@ -64,6 +66,18 @@ def main() -> int:
 
     if prompt == "__sleep__":
         time.sleep(0.2)
+    if prompt == "__disconnect_exec__":
+        sys.stderr.write(
+            "Reconnecting... 2/5 (stream disconnected before completion: temporary failure)\n"
+        )
+        sys.stderr.flush()
+        os.kill(os.getpid(), signal.SIGKILL)
+    if prompt == "__disconnect__" and resumed:
+        sys.stderr.write(
+            "Reconnecting... 2/5 (stream disconnected before completion: temporary failure)\n"
+        )
+        sys.stderr.flush()
+        os.kill(os.getpid(), signal.SIGKILL)
 
     sys.stdout.write('{"type":"thread.started","thread_id":"thread-123"}\n')
     sys.stdout.write('{"type":"turn.started"}\n')
