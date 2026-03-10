@@ -49,5 +49,6 @@ class SettingsTests(unittest.TestCase):
             self.assertEqual(settings.runtime_dir, (root / "runtime").resolve())
             self.assertEqual(settings.jobs_dir, (root / "jobs").resolve())
             self.assertEqual(settings.skills_dir, (root / "skills").resolve())
+            self.assertEqual(settings.subagents_dir, (root / "agents").resolve())
             self.assertEqual(settings.tools_dir, (root / "tools").resolve())
             self.assertEqual(settings.job_store_path, (root / "runtime" / "jobs.sqlite").resolve())

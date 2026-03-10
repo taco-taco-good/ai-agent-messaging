@@ -14,6 +14,7 @@ from agent_messaging.core.interfaces import (
     ProviderFactoryProtocol,
     ToolRuntimeProtocol,
 )
+from agent_messaging.core.subagents import SubagentPersonaStore, SubagentRuntime
 from agent_messaging.memory.init_docs import materialize_init_doc
 from agent_messaging.memory.metadata import MetadataGenerator
 from agent_messaging.memory.search import MemorySearchTool
@@ -49,6 +50,9 @@ class AgentMessagingApp:
         chunk_limit: int = 2000,
         job_runtime: Optional[JobRuntime] = None,
         delivery_runtime: Optional[DeliveryRuntime] = None,
+        subagents_dir: Optional[Path] = None,
+        runtime_dir: Optional[Path] = None,
+        skills_dir: Optional[Path] = None,
     ) -> None:
         if service is None:
             if registry is None or session_manager is None or provider_factory is None:
@@ -58,6 +62,14 @@ class AgentMessagingApp:
                 )
             resolved_tool_runtime = tool_runtime or ToolRuntime()
             self._initialize_agents(registry=registry, tool_runtime=resolved_tool_runtime)
+            self._register_subagent_tool(
+                registry=registry,
+                tool_runtime=resolved_tool_runtime,
+                provider_factory=provider_factory,
+                subagents_dir=(subagents_dir or Path("agents")).resolve(),
+                runtime_dir=(runtime_dir or Path("runtime")).resolve(),
+                skills_dir=(skills_dir or Path("skills")).resolve(),
+            )
             provider_runtime = ProviderRuntime(
                 session_manager=session_manager,
                 provider_factory=provider_factory,
@@ -143,6 +155,34 @@ class AgentMessagingApp:
                 ),
             )
 
+    @staticmethod
+    def _register_subagent_tool(
+        *,
+        registry: AgentRegistryProtocol,
+        tool_runtime: ToolRuntimeProtocol,
+        provider_factory: ProviderFactoryProtocol,
+        subagents_dir: Path,
+        runtime_dir: Path,
+        skills_dir: Path,
+    ) -> None:
+        subagent_runtime = SubagentRuntime(
+            persona_store=SubagentPersonaStore(subagents_dir),
+            runtime_dir=runtime_dir / "subagents",
+            skills_dir=skills_dir,
+            provider_factory=provider_factory,
+        )
+        tool_runtime.register(
+            "subagent.run",
+            lambda agent_id, persona_id, task, context=None, skills=None, model=None: subagent_runtime.run(
+                agent=registry.get(agent_id),
+                persona_id=persona_id,
+                task=task,
+                context=context,
+                skills=skills,
+                model=model,
+            ),
+        )
+
 
 def build_app(config_path: Path) -> AgentMessagingApp:
     settings = load_settings(config_path=config_path)
@@ -152,6 +192,14 @@ def build_app(config_path: Path) -> AgentMessagingApp:
     tool_runtime = ToolRuntime()
     AgentMessagingApp._initialize_agents(registry=registry, tool_runtime=tool_runtime)
     load_external_tools(settings.tools_dir, tool_runtime)
+    AgentMessagingApp._register_subagent_tool(
+        registry=registry,
+        tool_runtime=tool_runtime,
+        provider_factory=create_provider,
+        subagents_dir=settings.subagents_dir,
+        runtime_dir=settings.runtime_dir,
+        skills_dir=settings.skills_dir,
+    )
     provider_runtime = ProviderRuntime(
         session_manager=session_manager,
         provider_factory=create_provider,

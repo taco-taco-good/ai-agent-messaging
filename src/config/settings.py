@@ -26,6 +26,7 @@ class AppSettings:
     runtime_dir: Path
     jobs_dir: Path
     skills_dir: Path
+    subagents_dir: Path
     tools_dir: Path
     job_store_path: Path
 
@@ -76,6 +77,7 @@ def load_settings(config_path: Path) -> AppSettings:
     runtime_dir = _resolve_path(base_dir, raw.get("runtime_dir", "../runtime"))
     jobs_dir = _resolve_path(base_dir, raw.get("jobs_dir", "../jobs"))
     skills_dir = _resolve_path(base_dir, raw.get("skills_dir", "../skills"))
+    subagents_dir = _resolve_path(base_dir, raw.get("subagents_dir", "../agents"))
     tools_dir = _resolve_path(base_dir, raw.get("tools_dir", "../tools"))
     job_store_path = _resolve_path(
         base_dir,
@@ -86,6 +88,7 @@ def load_settings(config_path: Path) -> AppSettings:
         runtime_dir=runtime_dir,
         jobs_dir=jobs_dir,
         skills_dir=skills_dir,
+        subagents_dir=subagents_dir,
         tools_dir=tools_dir,
         job_store_path=job_store_path,
     )

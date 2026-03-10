@@ -3,6 +3,7 @@
 .env
 .venv/
 .claude/
+.gemini/
 .skills/
 
 .pycache/
@@ -23,6 +24,8 @@ dist/
 !/jobs/.gitkeep
 /skills/*
 !/skills/.gitkeep
+/agents/*
+!/agents/.gitkeep
 /tools/*
 !/tools/.gitkeep
 
