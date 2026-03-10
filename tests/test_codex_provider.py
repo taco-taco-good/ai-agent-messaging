@@ -101,7 +101,7 @@ class CodexProviderTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Exact model: pending confirmation", stats[0])
             self.assertIn("Source: waiting for a new provider response", stats[0])
 
-    async def test_codex_wrapper_emits_progress_events(self) -> None:
+    async def test_codex_wrapper_does_not_emit_progress_for_fast_response(self) -> None:
         fixture = Path(__file__).parent / "fixtures" / "fake_codex.py"
         with tempfile.TemporaryDirectory() as tempdir:
             wrapper = CodexWrapper(
@@ -121,7 +121,31 @@ class CodexProviderTests(unittest.IsolatedAsyncioTestCase):
                 chunks.append(chunk)
 
             self.assertEqual(chunks, ["reply:hello:gpt-5.3-codex"])
-            self.assertIn("Codex가 응답을 생성하고 있습니다.", progress)
+            self.assertEqual(progress, [])
+
+    async def test_codex_wrapper_emits_warning_progress_for_slow_response(self) -> None:
+        fixture = Path(__file__).parent / "fixtures" / "fake_codex.py"
+        with tempfile.TemporaryDirectory() as tempdir:
+            wrapper = CodexWrapper(
+                executable=sys.executable,
+                base_args=[str(fixture)],
+                default_model="gpt-5",
+                workspace_dir=Path(tempdir),
+                warning_timeout=0.05,
+                hard_timeout=0.5,
+            )
+            progress = []
+
+            async def _progress(message: str) -> None:
+                progress.append(message)
+
+            wrapper.set_progress_callback(_progress)
+            chunks = []
+            async for chunk in wrapper.send_user_message("__sleep__"):
+                chunks.append(chunk)
+
+            self.assertEqual(chunks, ["reply:__sleep__:gpt-5.3-codex"])
+            self.assertEqual(progress, ["응답 생성에 시간이 걸리고 있습니다. 계속 처리 중입니다."])
 
     async def test_codex_wrapper_times_out_stalled_exec(self) -> None:
         fixture = Path(__file__).parent / "fixtures" / "fake_codex.py"

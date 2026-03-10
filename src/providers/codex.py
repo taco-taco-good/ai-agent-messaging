@@ -82,6 +82,7 @@ class CodexWrapper(CLIWrapper):
         use_pty: bool = False,
         provider_session_id: Optional[str] = None,
         codex_home: Optional[Path] = None,
+        warning_timeout: float = 60.0,
         hard_timeout: float = 180.0,
     ) -> None:
         super().__init__(default_model=default_model)
@@ -97,6 +98,7 @@ class CodexWrapper(CLIWrapper):
         self._has_history = bool(provider_session_id)
         self.current_model = self._normalize_model_alias(self.current_model)
         self.codex_home = codex_home or (Path.home() / ".codex")
+        self.warning_timeout = warning_timeout
         self.hard_timeout = hard_timeout
         self.runtime_thread_id = ""
 
@@ -231,7 +233,7 @@ class CodexWrapper(CLIWrapper):
                 warned = False
                 while True:
                     elapsed = asyncio.get_running_loop().time() - started_monotonic
-                    if not warned and elapsed >= min(60.0, self.hard_timeout):
+                    if not warned and elapsed >= self.warning_timeout:
                         warned = True
                         self._timeout_warning_issued = True
                         await self.emit_progress("응답 생성에 시간이 걸리고 있습니다. 계속 처리 중입니다.")
@@ -264,8 +266,6 @@ class CodexWrapper(CLIWrapper):
                         if isinstance(thread_id, str) and thread_id:
                             self.provider_session_id = thread_id
                             self.runtime_thread_id = thread_id
-                    elif payload.get("type") == "turn.started":
-                        await self.emit_progress("Codex가 응답을 생성하고 있습니다.")
                     elif payload.get("type") == "item.completed":
                         item = payload.get("item") or {}
                         if isinstance(item, dict) and item.get("type") == "agent_message":
