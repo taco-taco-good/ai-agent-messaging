@@ -188,12 +188,14 @@ MVP whitelist:
 - `src/tools/builtins.py`
 - `src/tools/loader.py`
 - `MemorySearchTool`
+- `SubagentRuntime`
 
 규칙:
 - `memory_search`는 provider wrapper 계약에 포함하지 않음
 - wrapper는 tool 실행 결과를 모를 수 있어도 됨
 - internal tool은 엔진이 소유한다
 - external tool은 root `tools/` 아래에서 사용자가 정의한다
+- `subagent.run`은 core가 소유하는 internal tool이며 root `agents/` 또는 `.claude/agents`, `.gemini/agents`의 persona 문서를 읽는다
 
 ### 2.8 Job Runtime Layer
 
@@ -220,6 +222,7 @@ MVP whitelist:
 - `skill`은 agent가 읽는 작업 문서다
 - `tool`은 개별 기능 단위다
 - root `jobs/`, `skills/`, `tools/`는 사용자 자산이며 git 추적 대상이 아니다
+- root `agents/`는 사용자 정의 subagent persona 자산이며 git 추적 대상이 아니다
 - `src/jobs`, `src/skills`, `src/tools`는 엔진 내부 모듈이다
 
 ### 2.8 Transport Layer

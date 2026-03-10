@@ -90,6 +90,7 @@ TTY 환경이 아니거나 plain prompt가 필요하면:
 ```yaml
 jobs_dir: ../jobs
 skills_dir: ../skills
+subagents_dir: ../agents
 tools_dir: ../tools
 job_store_path: ../runtime/jobs.sqlite
 
@@ -120,6 +121,7 @@ agents:
 | `cli_args` | provider CLI에 추가로 넘길 인자 |
 | `jobs_dir` | YAML job 문서를 읽어올 디렉터리 |
 | `skills_dir` | agent가 읽는 markdown skill 문서를 읽어올 디렉터리 |
+| `subagents_dir` | ephemeral subagent persona markdown을 읽어올 디렉터리 |
 | `tools_dir` | external tool manifest와 실행 스크립트를 읽어올 디렉터리 |
 | `job_store_path` | job/scheduler 상태를 저장할 SQLite 파일 경로 |
 
@@ -139,6 +141,31 @@ agents:
 wizard는 `config/personas/<agent>.md` 파일도 기본 내용으로 만들어줍니다.
 
 앱 시작 시 persona 파일이 있으면 provider별 초기 문서가 `workspace/<agent>/` 아래에 생성됩니다.
+
+### 5.1 Subagent Persona 작성
+
+ephemeral subagent persona는 root `agents/` 아래에 두고, `subagent.run` internal tool이 필요할 때 읽어 실행합니다. Claude/Gemini 문서 스타일도 그대로 읽을 수 있도록 다음 경로를 함께 지원합니다.
+
+- `agents/<name>.md`
+- `.claude/agents/<name>.md`
+- `.gemini/agents/<name>.md`
+
+subagent는 parent agent와 동일한 root `skills/` 디렉터리를 그대로 참고할 수 있으며, skill 내용을 복사하지 않고 경로만 child prompt에 전달합니다.
+
+예:
+
+```md
+---
+name: reviewer
+description: Review a plan and point out correctness risks first.
+tools:
+  - read
+  - rg
+max_turns: 6
+timeout_mins: 3
+---
+Focus on correctness first. Keep the answer concise and actionable.
+```
 
 ### 6. 수동 실행
 
@@ -269,6 +296,7 @@ ai-agent-messaging/
 │   └── status.py
 ├── config/             # 로컬 설정, persona 파일
 │   └── personas/
+├── agents/             # user-defined subagent personas
 ├── jobs/               # user-defined background job YAML
 ├── skills/             # user-defined agent skill markdown
 ├── tools/              # user-defined external tool manifests/scripts
