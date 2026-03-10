@@ -15,8 +15,9 @@ from agent_messaging.core.models import FrontmatterMetadata
 from agent_messaging.memory.metadata import MetadataGenerator
 from agent_messaging.memory.writer import MemoryWriter
 from agent_messaging.observability.context import log_context
-from agent_messaging.providers.base import ProviderResponseTimeout
+from agent_messaging.providers.base import ProgressCallback, ResponseCallback
 from agent_messaging.runtime.transport import chunk_text
+from agent_messaging.services.streaming import collect_with_timeout_recovery
 
 
 logger = logging.getLogger(__name__)
@@ -48,8 +49,8 @@ class ConversationService:
         parent_channel_id: Optional[str] = None,
         user_name: str = "user",
         metadata: Optional[FrontmatterMetadata] = None,
-        progress_callback=None,
-        response_callback=None,
+        progress_callback: Optional[ProgressCallback] = None,
+        response_callback: Optional[ResponseCallback] = None,
     ) -> list[str]:
         agent = self.registry.get(agent_id)
         logger.info(
@@ -74,7 +75,7 @@ class ConversationService:
             provider_session_id=wrapper.provider_session_id or "-",
         ):
             async with lock:
-                response, wrapper = await self._collect_with_timeout_recovery(
+                response, wrapper = await collect_with_timeout_recovery(
                     agent_id=agent.agent_id,
                     session_key=session_key,
                     wrapper=wrapper,
@@ -87,6 +88,7 @@ class ConversationService:
                         is_dm=is_dm,
                         parent_channel_id=parent_channel_id,
                     ),
+                    stop_session=self.provider_runtime.stop_session,
                 )
             generated_metadata = metadata or self.metadata_generator.generate(
                 user_text=content,
@@ -124,40 +126,3 @@ class ConversationService:
             )
             logger.info("user_message_completed")
             return chunk_text(response, limit=self.chunk_limit)
-
-    async def _collect(self, stream, response_callback=None) -> str:
-        parts = []
-        async for piece in stream:
-            parts.append(piece)
-            if response_callback is not None and piece:
-                await response_callback(piece)
-        return "".join(parts)
-
-    async def _collect_with_timeout_recovery(
-        self,
-        *,
-        agent_id: str,
-        session_key: str,
-        wrapper,
-        stream_factory,
-        progress_callback,
-        response_callback,
-        restart_factory,
-    ) -> tuple[str, object]:
-        wrapper.set_progress_callback(progress_callback)
-        try:
-            return await self._collect(stream_factory(wrapper), response_callback), wrapper
-        except ProviderResponseTimeout:
-            wrapper.set_progress_callback(None)
-            await self.provider_runtime.stop_session(agent_id=agent_id, session_key=session_key)
-            _, recovered_wrapper = await restart_factory()
-            recovered_wrapper.set_progress_callback(progress_callback)
-            try:
-                return (
-                    await self._collect(stream_factory(recovered_wrapper), response_callback),
-                    recovered_wrapper,
-                )
-            finally:
-                recovered_wrapper.set_progress_callback(None)
-        finally:
-            wrapper.set_progress_callback(None)

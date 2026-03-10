@@ -164,7 +164,10 @@ class ClaudeWrapper(SubprocessCLIWrapper):
                 "Provider executable not found: {0}".format(self.executable)
             ) from exc
 
-        assert process.stdout is not None
+        if process.stdout is None:
+            process.kill()
+            await process.wait()
+            raise ProviderError("Claude streaming stdout is not available.")
         lines: list[str] = []
         deltas: list[str] = []
         started = asyncio.get_running_loop().time()
@@ -216,28 +219,7 @@ class ClaudeWrapper(SubprocessCLIWrapper):
         if returncode != 0:
             raise ProviderError(stderr_text or "Claude print command failed.")
 
-        final_text = "".join(deltas)
-        if not final_text:
-            for raw_line in reversed(lines):
-                try:
-                    payload = json.loads(raw_line)
-                except json.JSONDecodeError:
-                    continue
-                if payload.get("type") == "result" and isinstance(payload.get("result"), str):
-                    final_text = str(payload["result"])
-                    break
-                if payload.get("type") == "assistant":
-                    message = payload.get("message") or {}
-                    content = message.get("content") if isinstance(message, dict) else None
-                    if isinstance(content, list):
-                        final_text = "".join(
-                            str(item.get("text") or "")
-                            for item in content
-                            if isinstance(item, dict) and item.get("type") == "text"
-                        )
-                        if final_text:
-                            break
-
+        final_text = "".join(deltas) or self._extract_streaming_final_text(lines)
         self._has_history = True
         await self._after_one_shot_success(
             raw_output="\n".join(lines),
@@ -256,6 +238,30 @@ class ClaudeWrapper(SubprocessCLIWrapper):
             "--include-partial-messages",
             command[-1],
         ]
+
+    @staticmethod
+    def _extract_streaming_final_text(lines: Sequence[str]) -> str:
+        for raw_line in reversed(lines):
+            try:
+                payload = json.loads(raw_line)
+            except json.JSONDecodeError:
+                continue
+            if payload.get("type") == "result" and isinstance(payload.get("result"), str):
+                return str(payload["result"])
+            if payload.get("type") != "assistant":
+                continue
+            message = payload.get("message") or {}
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, list):
+                continue
+            final_text = "".join(
+                str(item.get("text") or "")
+                for item in content
+                if isinstance(item, dict) and item.get("type") == "text"
+            )
+            if final_text:
+                return final_text
+        return ""
 
     @staticmethod
     def _project_slug(workspace_dir: Path) -> str:

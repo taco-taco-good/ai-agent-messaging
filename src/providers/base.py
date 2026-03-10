@@ -8,6 +8,7 @@ from agent_messaging.core.models import ModelOption
 
 
 ProgressCallback = Callable[[str], Awaitable[None]]
+ResponseCallback = Callable[[str], Awaitable[None]]
 
 
 class ProviderError(RuntimeError):

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Optional, Protocol, Sequence, Tuple
 
 from agent_messaging.core.models import ModelOption
-from agent_messaging.providers.base import CLIWrapper
+from agent_messaging.providers.base import CLIWrapper, ProgressCallback, ResponseCallback
 
 
 class MetadataGeneratorProtocol(Protocol):
@@ -132,8 +132,8 @@ class ConversationServiceProtocol(Protocol):
         parent_channel_id: Optional[str] = None,
         user_name: str = "user",
         metadata: Any = None,
-        progress_callback: Any = None,
-        response_callback: Any = None,
+        progress_callback: Optional[ProgressCallback] = None,
+        response_callback: Optional[ResponseCallback] = None,
     ) -> list[str]: ...
 
 
@@ -146,7 +146,7 @@ class CommandServiceProtocol(Protocol):
         is_dm: bool,
         parent_channel_id: Optional[str] = None,
         interaction_payload: Optional[dict[str, object]] = None,
-        progress_callback: Any = None,
+        progress_callback: Optional[ProgressCallback] = None,
     ) -> list[str]: ...
 
     async def handle_new_session(

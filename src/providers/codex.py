@@ -222,7 +222,10 @@ class CodexWrapper(CLIWrapper):
                         "Provider executable not found: {0}".format(self.executable)
                     ) from exc
 
-                assert process.stdout is not None
+                if process.stdout is None:
+                    process.kill()
+                    await process.wait()
+                    raise ProviderError("Codex streaming stdout is not available.")
                 stdout_lines: list[str] = []
                 response_parts: list[str] = []
                 warned = False

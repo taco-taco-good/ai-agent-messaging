@@ -479,9 +479,24 @@ class _ChannelStreamResponder:
             if index < len(self._messages):
                 current = self._messages[index]
                 if force or getattr(current, "content", None) != chunk:
-                    await current.edit(content=chunk)
+                    try:
+                        await current.edit(content=chunk)
+                    except Exception as exc:
+                        logger.warning(
+                            "discord_stream_edit_failed",
+                            extra={"chunk_index": index, "error": str(exc)},
+                        )
+                        replacement = await self.channel.send(chunk)
+                        self._messages[index] = replacement
             else:
-                message = await self.channel.send(chunk)
+                try:
+                    message = await self.channel.send(chunk)
+                except Exception as exc:
+                    logger.warning(
+                        "discord_stream_send_failed",
+                        extra={"chunk_index": index, "error": str(exc)},
+                    )
+                    raise
                 self._messages.append(message)
 
 
