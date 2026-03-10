@@ -11,7 +11,12 @@ from pathlib import Path
 from typing import Dict, Optional, Sequence
 
 from agent_messaging.core.models import ModelOption
-from agent_messaging.providers.base import CLIWrapper, ProviderError, ProviderStartupError
+from agent_messaging.providers.base import (
+    CLIWrapper,
+    ProviderError,
+    ProviderResponseTimeout,
+    ProviderStartupError,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -77,6 +82,7 @@ class CodexWrapper(CLIWrapper):
         use_pty: bool = False,
         provider_session_id: Optional[str] = None,
         codex_home: Optional[Path] = None,
+        hard_timeout: float = 180.0,
     ) -> None:
         super().__init__(default_model=default_model)
         self.executable = executable or self.default_command
@@ -91,6 +97,7 @@ class CodexWrapper(CLIWrapper):
         self._has_history = bool(provider_session_id)
         self.current_model = self._normalize_model_alias(self.current_model)
         self.codex_home = codex_home or (Path.home() / ".codex")
+        self.hard_timeout = hard_timeout
         self.runtime_thread_id = ""
 
     async def start(self) -> None:
@@ -110,7 +117,8 @@ class CodexWrapper(CLIWrapper):
 
     async def send_user_message(self, message: str):
         await self.start()
-        yield await self._run_codex(message)
+        async for chunk in self._run_codex(message):
+            yield chunk
 
     async def send_native_command(self, command: str, args: Optional[Dict[str, object]] = None):
         args = args or {}
@@ -174,11 +182,12 @@ class CodexWrapper(CLIWrapper):
             extra["thread"] = self.runtime_thread_id
         return self.format_stats_response(extra=extra)
 
-    async def _run_codex(self, prompt: str) -> str:
+    async def _run_codex(self, prompt: str):
         if not prompt.strip():
-            return ""
+            return
 
         started_at = time.time()
+        started_monotonic = asyncio.get_running_loop().time()
         with tempfile.TemporaryDirectory() as tempdir:
             output_path = Path(tempdir) / "last-message.txt"
             for attempt in range(2):
@@ -213,11 +222,61 @@ class CodexWrapper(CLIWrapper):
                         "Provider executable not found: {0}".format(self.executable)
                     ) from exc
 
-                stdout, stderr = await process.communicate()
-                stdout_text = stdout.decode("utf-8", errors="replace").strip()
+                assert process.stdout is not None
+                stdout_lines: list[str] = []
+                response_parts: list[str] = []
+                warned = False
+                while True:
+                    elapsed = asyncio.get_running_loop().time() - started_monotonic
+                    if not warned and elapsed >= min(60.0, self.hard_timeout):
+                        warned = True
+                        self._timeout_warning_issued = True
+                        await self.emit_progress("응답 생성에 시간이 걸리고 있습니다. 계속 처리 중입니다.")
+                    remaining = self.hard_timeout - elapsed
+                    if remaining <= 0:
+                        process.kill()
+                        await process.wait()
+                        raise ProviderResponseTimeout(
+                            "Codex did not respond within {0} seconds.".format(self.hard_timeout)
+                        )
+                    try:
+                        line = await asyncio.wait_for(
+                            process.stdout.readline(),
+                            timeout=min(1.0, remaining),
+                        )
+                    except asyncio.TimeoutError:
+                        continue
+                    if not line:
+                        break
+                    raw_line = line.decode("utf-8", errors="replace").strip()
+                    if not raw_line:
+                        continue
+                    stdout_lines.append(raw_line)
+                    try:
+                        payload = json.loads(raw_line)
+                    except json.JSONDecodeError:
+                        continue
+                    if payload.get("type") == "thread.started":
+                        thread_id = payload.get("thread_id")
+                        if isinstance(thread_id, str) and thread_id:
+                            self.provider_session_id = thread_id
+                            self.runtime_thread_id = thread_id
+                    elif payload.get("type") == "turn.started":
+                        await self.emit_progress("Codex가 응답을 생성하고 있습니다.")
+                    elif payload.get("type") == "item.completed":
+                        item = payload.get("item") or {}
+                        if isinstance(item, dict) and item.get("type") == "agent_message":
+                            text = item.get("text")
+                            if isinstance(text, str) and text:
+                                response_parts.append(text)
+                                yield text
+
+                stderr = await process.stderr.read() if process.stderr is not None else b""
+                returncode = await process.wait()
                 stderr_text = stderr.decode("utf-8", errors="replace").strip()
+                stdout_text = "\n".join(stdout_lines).strip()
                 self._capture_runtime_metadata(stdout_text)
-                if process.returncode == 0:
+                if returncode == 0:
                     break
 
                 detail = self._extract_runtime_error(stdout_text)
@@ -240,19 +299,22 @@ class CodexWrapper(CLIWrapper):
                     continue
                 raise ProviderError(
                     "Codex exec failed with exit code {0}: {1}".format(
-                        process.returncode,
+                        returncode,
                         detail or "unknown error",
                     )
                 )
 
-            response = ""
+            response = "".join(response_parts)
             if output_path.exists():
-                response = output_path.read_text(encoding="utf-8").strip()
+                file_output = output_path.read_text(encoding="utf-8").strip()
+                if file_output and not response:
+                    response = file_output
             if not response:
                 response = stdout_text
             await asyncio.to_thread(self._refresh_resolved_model_from_rollout, prompt, started_at)
             self._has_history = bool(self.provider_session_id)
-            return response
+            if not response_parts and response:
+                yield response
 
     def _build_command(self, prompt: str, output_path: Path) -> Sequence[str]:
         model = self.current_model or ""

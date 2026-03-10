@@ -132,6 +132,8 @@ class ConversationServiceProtocol(Protocol):
         parent_channel_id: Optional[str] = None,
         user_name: str = "user",
         metadata: Any = None,
+        progress_callback: Any = None,
+        response_callback: Any = None,
     ) -> list[str]: ...
 
 
@@ -144,6 +146,7 @@ class CommandServiceProtocol(Protocol):
         is_dm: bool,
         parent_channel_id: Optional[str] = None,
         interaction_payload: Optional[dict[str, object]] = None,
+        progress_callback: Any = None,
     ) -> list[str]: ...
 
     async def handle_new_session(

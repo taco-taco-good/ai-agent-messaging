@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 
@@ -61,7 +62,11 @@ def main() -> int:
         sys.stderr.write(message)
         return 1
 
+    if prompt == "__sleep__":
+        time.sleep(0.2)
+
     sys.stdout.write('{"type":"thread.started","thread_id":"thread-123"}\n')
+    sys.stdout.write('{"type":"turn.started"}\n')
     text = "resume:{0}:{1}".format(prompt, model) if resumed else "reply:{0}:{1}".format(prompt, model)
     if marker is not None:
         marker.write_text("has-history\n", encoding="utf-8")

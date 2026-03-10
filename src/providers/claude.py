@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Sequence
 
 from agent_messaging.core.models import ModelOption
+from agent_messaging.providers.base import ProviderError, ProviderResponseTimeout, ProviderStartupError
 from agent_messaging.providers.subprocess_cli import SubprocessCLIWrapper
 
 
@@ -63,6 +65,8 @@ class ClaudeWrapper(SubprocessCLIWrapper):
         use_pty: bool = True,
         provider_session_id: Optional[str] = None,
         config_dir: Optional[Path] = None,
+        warning_timeout: float = 60.0,
+        hard_timeout: float = 180.0,
     ) -> None:
         super().__init__(
             executable=executable or self.default_command,
@@ -72,6 +76,8 @@ class ClaudeWrapper(SubprocessCLIWrapper):
             supported_commands=self.default_supported_commands,
             model_options=model_options or self.default_model_options,
             use_pty=use_pty,
+            warning_timeout=warning_timeout,
+            hard_timeout=hard_timeout,
             prompt_args=("-p",),
             model_args_builder=_build_claude_model_args,
             initial_session_args_builder=lambda session_id: ["--session-id", session_id],
@@ -86,6 +92,15 @@ class ClaudeWrapper(SubprocessCLIWrapper):
         del raw_output
         del parsed_output
         self._refresh_resolved_model_from_session_log()
+
+    async def send_user_message(self, message: str):
+        if not self._uses_one_shot_mode:
+            async for chunk in super().send_user_message(message):
+                yield chunk
+            return
+        await self.start()
+        async for chunk in self._run_streaming_print_prompt(message):
+            yield chunk
 
     async def stats_response(self) -> str:
         self._refresh_resolved_model_from_session_log()
@@ -133,6 +148,114 @@ class ClaudeWrapper(SubprocessCLIWrapper):
                     session_id=self.provider_session_id,
                 )
                 return
+
+    async def _run_streaming_print_prompt(self, prompt: str):
+        command = self._build_streaming_command(prompt)
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                cwd=str(self.workspace_dir) if self.workspace_dir is not None else None,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError as exc:
+            raise ProviderStartupError(
+                "Provider executable not found: {0}".format(self.executable)
+            ) from exc
+
+        assert process.stdout is not None
+        lines: list[str] = []
+        deltas: list[str] = []
+        started = asyncio.get_running_loop().time()
+        warned = False
+
+        while True:
+            elapsed = asyncio.get_running_loop().time() - started
+            if not warned and elapsed >= self.warning_timeout:
+                warned = True
+                self._timeout_warning_issued = True
+                await self.emit_progress("응답 생성에 시간이 걸리고 있습니다. 계속 처리 중입니다.")
+            remaining = self.hard_timeout - elapsed
+            if remaining <= 0:
+                process.kill()
+                await process.wait()
+                raise ProviderResponseTimeout(
+                    "Provider did not respond within {0} seconds.".format(self.hard_timeout)
+                )
+            try:
+                line = await asyncio.wait_for(process.stdout.readline(), timeout=min(1.0, remaining))
+            except asyncio.TimeoutError:
+                continue
+            if not line:
+                break
+            raw_line = line.decode("utf-8", errors="replace").strip()
+            if not raw_line:
+                continue
+            lines.append(raw_line)
+            try:
+                payload = json.loads(raw_line)
+            except json.JSONDecodeError:
+                continue
+            event_type = payload.get("type")
+            if event_type == "stream_event":
+                event = payload.get("event") or {}
+                if (
+                    isinstance(event, dict)
+                    and event.get("type") == "content_block_delta"
+                    and isinstance(event.get("delta"), dict)
+                ):
+                    text = event["delta"].get("text")
+                    if isinstance(text, str) and text:
+                        deltas.append(text)
+                        yield text
+
+        stderr = await process.stderr.read() if process.stderr is not None else b""
+        returncode = await process.wait()
+        stderr_text = stderr.decode("utf-8", errors="replace").strip()
+        if returncode != 0:
+            raise ProviderError(stderr_text or "Claude print command failed.")
+
+        final_text = "".join(deltas)
+        if not final_text:
+            for raw_line in reversed(lines):
+                try:
+                    payload = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    continue
+                if payload.get("type") == "result" and isinstance(payload.get("result"), str):
+                    final_text = str(payload["result"])
+                    break
+                if payload.get("type") == "assistant":
+                    message = payload.get("message") or {}
+                    content = message.get("content") if isinstance(message, dict) else None
+                    if isinstance(content, list):
+                        final_text = "".join(
+                            str(item.get("text") or "")
+                            for item in content
+                            if isinstance(item, dict) and item.get("type") == "text"
+                        )
+                        if final_text:
+                            break
+
+        self._has_history = True
+        await self._after_one_shot_success(
+            raw_output="\n".join(lines),
+            parsed_output=final_text,
+        )
+        if not deltas and final_text:
+            yield final_text
+
+    def _build_streaming_command(self, prompt: str) -> list[str]:
+        command = self._build_one_shot_command(prompt)
+        return [
+            *command[:-1],
+            "--verbose",
+            "--output-format",
+            "stream-json",
+            "--include-partial-messages",
+            command[-1],
+        ]
 
     @staticmethod
     def _project_slug(workspace_dir: Path) -> str:

@@ -14,6 +14,7 @@ from agent_messaging.core.interfaces import (
 from agent_messaging.core.models import ModelOption
 from agent_messaging.runtime.transport import chunk_text
 from agent_messaging.observability.context import log_context
+from agent_messaging.providers.base import ProviderResponseTimeout
 from agent_messaging.runtime.interactions import PendingInteractionStore
 
 
@@ -45,6 +46,7 @@ class CommandService:
         is_dm: bool,
         parent_channel_id: Optional[str] = None,
         interaction_payload: Optional[dict[str, object]] = None,
+        progress_callback=None,
     ) -> list[str]:
         expected_session_key = self.session_manager.session_scope_key(
             channel_id=channel_id,
@@ -106,8 +108,20 @@ class CommandService:
             lock = self.provider_runtime.session_lock(agent.agent_id, expected_session_key)
             with log_context(provider_session_id=wrapper.provider_session_id or "-"):
                 async with lock:
-                    response = await self._collect(
-                        wrapper.send_native_command(routed.command, routed.args)
+                    response, wrapper = await self._collect_with_timeout_recovery(
+                        agent_id=agent.agent_id,
+                        session_key=expected_session_key,
+                        wrapper=wrapper,
+                        stream_factory=lambda current: current.send_native_command(
+                            routed.command, routed.args
+                        ),
+                        progress_callback=progress_callback,
+                        restart_factory=lambda: self.provider_runtime.ensure_wrapper(
+                            agent=agent,
+                            channel_id=channel_id,
+                            is_dm=is_dm,
+                            parent_channel_id=parent_channel_id,
+                        ),
                     )
                 if routed.command == "/model" and routed.args.get("model_alias"):
                     await self.session_manager.upsert(
@@ -217,3 +231,28 @@ class CommandService:
         async for piece in stream:
             parts.append(piece)
         return "".join(parts)
+
+    async def _collect_with_timeout_recovery(
+        self,
+        *,
+        agent_id: str,
+        session_key: str,
+        wrapper,
+        stream_factory,
+        progress_callback,
+        restart_factory,
+    ) -> tuple[str, object]:
+        wrapper.set_progress_callback(progress_callback)
+        try:
+            return await self._collect(stream_factory(wrapper)), wrapper
+        except ProviderResponseTimeout:
+            wrapper.set_progress_callback(None)
+            await self.provider_runtime.stop_session(agent_id=agent_id, session_key=session_key)
+            _, recovered_wrapper = await restart_factory()
+            recovered_wrapper.set_progress_callback(progress_callback)
+            try:
+                return await self._collect(stream_factory(recovered_wrapper)), recovered_wrapper
+            finally:
+                recovered_wrapper.set_progress_callback(None)
+        finally:
+            wrapper.set_progress_callback(None)

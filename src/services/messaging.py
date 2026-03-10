@@ -78,6 +78,8 @@ class MessagingService:
         parent_channel_id: Optional[str] = None,
         user_name: str = "user",
         metadata: Optional[FrontmatterMetadata] = None,
+        progress_callback=None,
+        response_callback=None,
     ) -> list[str]:
         return await self.conversation_service.handle_user_message(
             agent_id=agent_id,
@@ -87,6 +89,8 @@ class MessagingService:
             parent_channel_id=parent_channel_id,
             user_name=user_name,
             metadata=metadata,
+            progress_callback=progress_callback,
+            response_callback=response_callback,
         )
 
     async def handle_cli_command(
@@ -97,6 +101,7 @@ class MessagingService:
         is_dm: bool,
         parent_channel_id: Optional[str] = None,
         interaction_payload: Optional[dict[str, object]] = None,
+        progress_callback=None,
     ) -> list[str]:
         return await self.command_service.handle_cli_command(
             agent_id=agent_id,
@@ -105,6 +110,7 @@ class MessagingService:
             is_dm=is_dm,
             parent_channel_id=parent_channel_id,
             interaction_payload=interaction_payload,
+            progress_callback=progress_callback,
         )
 
     async def handle_new_session(

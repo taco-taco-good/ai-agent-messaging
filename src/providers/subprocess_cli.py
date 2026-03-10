@@ -276,6 +276,7 @@ class SubprocessCLIWrapper(CLIWrapper):
             )
 
         self._timeout_warning_issued = True
+        await self.emit_progress("응답 생성에 시간이 걸리고 있습니다. 계속 처리 중입니다.")
         logger.warning(
             "provider_response_slow",
             extra={"provider": self.provider_name, "elapsed_seconds": stage1},
@@ -446,14 +447,26 @@ class SubprocessCLIWrapper(CLIWrapper):
             raise ProviderStartupError(
                 "Provider executable not found: {0}".format(self.executable)
             ) from exc
+        communicate_task = asyncio.create_task(process.communicate())
         try:
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(),
-                timeout=self.hard_timeout,
-            )
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    asyncio.shield(communicate_task),
+                    timeout=self.warning_timeout,
+                )
+            except asyncio.TimeoutError:
+                self._timeout_warning_issued = True
+                await self.emit_progress("응답 생성에 시간이 걸리고 있습니다. 계속 처리 중입니다.")
+                remaining = max(self.hard_timeout - self.warning_timeout, 0.0)
+                if remaining <= 0:
+                    raise
+                stdout, stderr = await asyncio.wait_for(
+                    asyncio.shield(communicate_task),
+                    timeout=remaining,
+                )
         except asyncio.TimeoutError as exc:
             process.kill()
-            await process.communicate()
+            await communicate_task
             raise ProviderResponseTimeout(
                 "Provider did not respond within {0} seconds.".format(self.hard_timeout)
             ) from exc

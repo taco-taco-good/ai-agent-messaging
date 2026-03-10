@@ -265,12 +265,16 @@ def create_agent_client(app: AgentMessagingApp, agent_id: str):
                     logger.info("discord_cli_command", extra={"command": command})
                     await interaction.response.defer()
                     try:
+                        async def _progress(message_text: str) -> None:
+                            await _send_interaction_chunks(interaction, [message_text])
+
                         chunks = await app.handle_cli_command(
                             agent_id=agent_id,
                             channel_id=context["channel_id"],
                             raw_command=command,
                             is_dm=context["is_dm"],
                             parent_channel_id=context["parent_channel_id"],
+                            progress_callback=_progress,
                         )
                     except ProviderResponseTimeout as exc:
                         logger.warning("discord_cli_timeout", extra=_error_extra(exc))
@@ -315,8 +319,15 @@ def create_agent_client(app: AgentMessagingApp, agent_id: str):
                 )
             ):
                 logger.info("discord_message_received", extra={"is_dm": context["is_dm"]})
+                responder = _ChannelStreamResponder(message.channel)
                 async with message.channel.typing():
                     try:
+                        async def _progress(message_text: str) -> None:
+                            await responder.send_progress(message_text)
+
+                        async def _response(piece: str) -> None:
+                            await responder.stream_text(piece)
+
                         chunks = await app.handle_user_message(
                             agent_id=agent_id,
                             channel_id=context["channel_id"],
@@ -324,6 +335,8 @@ def create_agent_client(app: AgentMessagingApp, agent_id: str):
                             is_dm=context["is_dm"],
                             parent_channel_id=context["parent_channel_id"],
                             user_name=context["user_name"],
+                            progress_callback=_progress,
+                            response_callback=_response,
                         )
                     except ProviderResponseTimeout as exc:
                         logger.warning("discord_message_timeout", extra=_error_extra(exc))
@@ -337,7 +350,8 @@ def create_agent_client(app: AgentMessagingApp, agent_id: str):
                     except Exception as exc:
                         logger.exception("discord_message_unexpected_error", extra=_error_extra(exc))
                         chunks = ["Internal error. error_code=internal_error"]
-                await _send_channel_chunks(message.channel, chunks)
+                if not await responder.finalize(chunks):
+                    await _send_channel_chunks(message.channel, chunks)
 
     return AgentClient()
 
@@ -387,6 +401,8 @@ def _extract_content(bot_user: Any, message: Any) -> str:
 
 _CHUNK_SEND_DELAY = 0.3  # seconds between consecutive chunk sends
 _DISCORD_SELECT_TEXT_LIMIT = 100
+_STREAM_EDIT_LIMIT = 1900
+_STREAM_FLUSH_CHARS = 200
 
 
 def _truncate_select_text(text: str) -> str:
@@ -412,6 +428,61 @@ async def _send_channel_chunks(channel: Any, chunks: List[str]) -> None:
         except Exception as exc:
             logger.warning("discord_send_chunk_failed", extra={"chunk_index": i, "error": str(exc)})
             raise
+
+
+class _ChannelStreamResponder:
+    def __init__(self, channel: Any) -> None:
+        self.channel = channel
+        self._messages: List[Any] = []
+        self._text = ""
+        self._rendered_length = 0
+        self._last_progress = ""
+        self._lock = asyncio.Lock()
+
+    async def stream_text(self, piece: str) -> None:
+        if not piece:
+            return
+        async with self._lock:
+            self._text += piece
+            should_flush = (
+                len(self._text) - self._rendered_length >= _STREAM_FLUSH_CHARS
+                or "\n" in piece
+            )
+            if not should_flush:
+                return
+            await self._sync_messages()
+            self._rendered_length = len(self._text)
+
+    async def send_progress(self, message: str) -> None:
+        if not message:
+            return
+        async with self._lock:
+            if message == self._last_progress:
+                return
+            await _send_channel_chunks(self.channel, [message])
+            self._last_progress = message
+
+    async def finalize(self, chunks: List[str]) -> bool:
+        async with self._lock:
+            if not self._text:
+                return False
+            self._text = "".join(chunks)
+            await self._sync_messages(force=True)
+            self._rendered_length = len(self._text)
+            return True
+
+    async def _sync_messages(self, force: bool = False) -> None:
+        chunks = chunk_text(self._text, limit=_STREAM_EDIT_LIMIT)
+        if not chunks:
+            return
+        for index, chunk in enumerate(chunks):
+            if index < len(self._messages):
+                current = self._messages[index]
+                if force or getattr(current, "content", None) != chunk:
+                    await current.edit(content=chunk)
+            else:
+                message = await self.channel.send(chunk)
+                self._messages.append(message)
 
 
 async def _send_interaction_chunks(interaction: Any, chunks: List[str]) -> None:
