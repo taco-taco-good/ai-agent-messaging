@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from agent_messaging.providers.codex import CodexWrapper
+from agent_messaging.providers.base import ProviderResponseTimeout
 
 
 class CodexProviderTests(unittest.IsolatedAsyncioTestCase):
@@ -99,6 +100,43 @@ class CodexProviderTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Selected model: gpt-5.3-codex", stats[0])
             self.assertIn("Exact model: pending confirmation", stats[0])
             self.assertIn("Source: waiting for a new provider response", stats[0])
+
+    async def test_codex_wrapper_emits_progress_events(self) -> None:
+        fixture = Path(__file__).parent / "fixtures" / "fake_codex.py"
+        with tempfile.TemporaryDirectory() as tempdir:
+            wrapper = CodexWrapper(
+                executable=sys.executable,
+                base_args=[str(fixture)],
+                default_model="gpt-5",
+                workspace_dir=Path(tempdir),
+            )
+            progress = []
+
+            async def _progress(message: str) -> None:
+                progress.append(message)
+
+            wrapper.set_progress_callback(_progress)
+            chunks = []
+            async for chunk in wrapper.send_user_message("hello"):
+                chunks.append(chunk)
+
+            self.assertEqual(chunks, ["reply:hello:gpt-5.3-codex"])
+            self.assertIn("Codex가 응답을 생성하고 있습니다.", progress)
+
+    async def test_codex_wrapper_times_out_stalled_exec(self) -> None:
+        fixture = Path(__file__).parent / "fixtures" / "fake_codex.py"
+        with tempfile.TemporaryDirectory() as tempdir:
+            wrapper = CodexWrapper(
+                executable=sys.executable,
+                base_args=[str(fixture)],
+                default_model="gpt-5",
+                workspace_dir=Path(tempdir),
+                hard_timeout=0.05,
+            )
+
+            with self.assertRaisesRegex(ProviderResponseTimeout, "did not respond"):
+                async for _chunk in wrapper.send_user_message("__sleep__"):
+                    pass
 
     async def test_codex_wrapper_stats_reads_exact_model_from_rollout_log(self) -> None:
         fixture = Path(__file__).parent / "fixtures" / "fake_codex.py"

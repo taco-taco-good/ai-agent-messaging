@@ -7,7 +7,7 @@ from pathlib import Path
 from agent_messaging.core.errors import InteractionValidationError
 from agent_messaging.core.models import AgentConfig, FrontmatterMetadata, ModelOption
 from agent_messaging.config.registry import AgentRegistry
-from agent_messaging.providers.base import CLIWrapper
+from agent_messaging.providers.base import CLIWrapper, ProviderResponseTimeout
 from agent_messaging.services import (
     CommandService,
     CommandRouter,
@@ -66,6 +66,18 @@ class _RotatingConversationProvider(_FakeProvider):
     async def send_user_message(self, message: str):
         self.provider_session_id = "session-2"
         yield "ok"
+
+
+class _TimeoutOnceProvider(_FakeProvider):
+    def __init__(self, default_model=None):
+        super().__init__(default_model=default_model)
+        self._timed_out = False
+
+    async def send_user_message(self, message: str):
+        if not self._timed_out:
+            self._timed_out = True
+            raise ProviderResponseTimeout("simulated timeout")
+        yield "ok-after-retry"
 
 
 class PendingInteractionStoreTests(unittest.TestCase):
@@ -182,6 +194,161 @@ class ConversationServiceTests(unittest.IsolatedAsyncioTestCase):
                 ),
             )
             self.assertEqual(chunks, ["ok"])
+
+    async def test_handle_user_message_retries_once_after_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            agent = AgentConfig(
+                agent_id="reviewer",
+                provider="codex",
+                discord_token="token",
+                workspace_dir=Path(tempdir) / "workspace" / "reviewer",
+                memory_dir=Path(tempdir) / "memory",
+                model="alpha",
+                display_name="Reviewer",
+            )
+            registry = AgentRegistry({"reviewer": agent})
+            store = SessionStore(Path(tempdir) / "runtime" / "sessions.json")
+            session_manager = SessionManager(store)
+            attempts = {"count": 0}
+            timed_out = {"done": False}
+
+            def _factory(config, session_key, session_record=None):
+                attempts["count"] += 1
+                provider = _TimeoutOnceProvider(default_model=config.model)
+                provider._timed_out = timed_out["done"]
+                if not timed_out["done"]:
+                    timed_out["done"] = True
+                return provider
+
+            runtime = ProviderRuntime(
+                session_manager=session_manager,
+                provider_factory=_factory,
+            )
+            service = ConversationService(
+                registry=registry,
+                session_manager=session_manager,
+                provider_runtime=runtime,
+            )
+            progress = []
+
+            async def _progress(message: str) -> None:
+                progress.append(message)
+
+            chunks = await service.handle_user_message(
+                agent_id="reviewer",
+                channel_id="1",
+                content="hello",
+                is_dm=False,
+                metadata=FrontmatterMetadata(
+                    tags=["greeting"],
+                    topic="Greeting",
+                    summary="Said hello.",
+                ),
+                progress_callback=_progress,
+            )
+
+            self.assertEqual(chunks, ["ok-after-retry"])
+            self.assertEqual(attempts["count"], 2)
+
+    async def test_handle_user_message_chunks_long_reply(self) -> None:
+        class _LongProvider(_FakeProvider):
+            async def send_user_message(self, message: str):
+                yield "x" * 5005
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            agent = AgentConfig(
+                agent_id="reviewer",
+                provider="codex",
+                discord_token="token",
+                workspace_dir=Path(tempdir) / "workspace" / "reviewer",
+                memory_dir=Path(tempdir) / "memory",
+                model="alpha",
+                display_name="Reviewer",
+            )
+            registry = AgentRegistry({"reviewer": agent})
+            store = SessionStore(Path(tempdir) / "runtime" / "sessions.json")
+            session_manager = SessionManager(store)
+            runtime = ProviderRuntime(
+                session_manager=session_manager,
+                provider_factory=lambda config, session_key, session_record=None: _LongProvider(
+                    default_model=config.model
+                ),
+            )
+            service = ConversationService(
+                registry=registry,
+                session_manager=session_manager,
+                provider_runtime=runtime,
+            )
+
+            chunks = await service.handle_user_message(
+                agent_id="reviewer",
+                channel_id="1",
+                content="hello",
+                is_dm=False,
+                metadata=FrontmatterMetadata(
+                    tags=["greeting"],
+                    topic="Greeting",
+                    summary="Said hello.",
+                ),
+            )
+
+            self.assertEqual(sum(len(chunk) for chunk in chunks), 5005)
+            self.assertTrue(all(len(chunk) <= 2000 for chunk in chunks))
+
+    async def test_streamed_response_is_persisted_as_final_message(self) -> None:
+        class _ChunkedProvider(_FakeProvider):
+            async def send_user_message(self, message: str):
+                yield "hel"
+                yield "lo"
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            agent = AgentConfig(
+                agent_id="reviewer",
+                provider="codex",
+                discord_token="token",
+                workspace_dir=Path(tempdir) / "workspace" / "reviewer",
+                memory_dir=Path(tempdir) / "memory",
+                model="alpha",
+                display_name="Reviewer",
+            )
+            registry = AgentRegistry({"reviewer": agent})
+            store = SessionStore(Path(tempdir) / "runtime" / "sessions.json")
+            session_manager = SessionManager(store)
+            runtime = ProviderRuntime(
+                session_manager=session_manager,
+                provider_factory=lambda config, session_key, session_record=None: _ChunkedProvider(
+                    default_model=config.model
+                ),
+            )
+            streamed = []
+
+            async def _response(piece: str) -> None:
+                streamed.append(piece)
+
+            service = ConversationService(
+                registry=registry,
+                session_manager=session_manager,
+                provider_runtime=runtime,
+            )
+
+            chunks = await service.handle_user_message(
+                agent_id="reviewer",
+                channel_id="1",
+                content="hello",
+                is_dm=False,
+                metadata=FrontmatterMetadata(
+                    tags=["greeting"],
+                    topic="Greeting",
+                    summary="Said hello.",
+                ),
+                response_callback=_response,
+            )
+
+            self.assertEqual(streamed, ["hel", "lo"])
+            self.assertEqual(chunks, ["hello"])
+            documents = sorted((Path(tempdir) / "memory").rglob("conversation_*.md"))
+            self.assertEqual(len(documents), 1)
+            self.assertIn("hello", documents[0].read_text(encoding="utf-8"))
 
     async def test_handle_user_message_persists_updated_provider_session(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:

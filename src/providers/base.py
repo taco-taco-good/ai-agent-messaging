@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 import time
-from typing import AsyncIterator, Dict, Iterable, Optional, Sequence
+from typing import AsyncIterator, Awaitable, Callable, Dict, Iterable, Optional, Sequence
 
 from agent_messaging.core.models import ModelOption
+
+
+ProgressCallback = Callable[[str], Awaitable[None]]
+ResponseCallback = Callable[[str], Awaitable[None]]
 
 
 class ProviderError(RuntimeError):
@@ -44,11 +48,20 @@ class CLIWrapper(ABC):
         self.resolved_model_source: Optional[str] = None
         self.resolved_model_session_id: Optional[str] = None
         self._exact_model_pending_since: Optional[float] = None
+        self._progress_callback: Optional[ProgressCallback] = None
 
     @property
     def timeout_warning_issued(self) -> bool:
         """True if the last send operation hit the warning timeout stage."""
         return self._timeout_warning_issued
+
+    def set_progress_callback(self, callback: Optional[ProgressCallback]) -> None:
+        self._progress_callback = callback
+
+    async def emit_progress(self, message: str) -> None:
+        if self._progress_callback is None:
+            return
+        await self._progress_callback(message)
 
     @abstractmethod
     async def start(self) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 
 current_model = "alpha"
@@ -41,8 +42,29 @@ if "-p" in args:
         current_model = args[args.index("-m") + 1]
     if "--betas" in args and "context-1m-2025-08-07" in args:
         current_model = "{0}-1m".format(current_model)
+    if prompt == "__sleep__":
+        time.sleep(0.2)
     response = "reply:{0}:{1}".format(prompt, current_model)
-    if "--output-format" in args and args[args.index("--output-format") + 1] == "json":
+    stream_chunks = [response]
+    if prompt == "__split__":
+        stream_chunks = ["reply:__s", "plit:{0}".format(current_model)]
+    if "--output-format" in args and args[args.index("--output-format") + 1] == "stream-json":
+        print(json.dumps({"type": "system", "subtype": "init"}), flush=True)
+        for chunk in stream_chunks:
+            print(
+                json.dumps(
+                    {
+                        "type": "stream_event",
+                        "event": {
+                            "type": "content_block_delta",
+                            "delta": {"type": "text_delta", "text": chunk},
+                        },
+                    }
+                ),
+                flush=True,
+            )
+        print(json.dumps({"type": "result", "subtype": "success", "result": response}), flush=True)
+    elif "--output-format" in args and args[args.index("--output-format") + 1] == "json":
         print(
             json.dumps({"session_id": session_id or resume_id or "fake-session", "response": response}),
             flush=True,

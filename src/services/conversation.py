@@ -15,7 +15,9 @@ from agent_messaging.core.models import FrontmatterMetadata
 from agent_messaging.memory.metadata import MetadataGenerator
 from agent_messaging.memory.writer import MemoryWriter
 from agent_messaging.observability.context import log_context
+from agent_messaging.providers.base import ProgressCallback, ResponseCallback
 from agent_messaging.runtime.transport import chunk_text
+from agent_messaging.services.streaming import collect_with_timeout_recovery
 
 
 logger = logging.getLogger(__name__)
@@ -47,6 +49,8 @@ class ConversationService:
         parent_channel_id: Optional[str] = None,
         user_name: str = "user",
         metadata: Optional[FrontmatterMetadata] = None,
+        progress_callback: Optional[ProgressCallback] = None,
+        response_callback: Optional[ResponseCallback] = None,
     ) -> list[str]:
         agent = self.registry.get(agent_id)
         logger.info(
@@ -71,7 +75,21 @@ class ConversationService:
             provider_session_id=wrapper.provider_session_id or "-",
         ):
             async with lock:
-                response = await self._collect(wrapper.send_user_message(content))
+                response, wrapper = await collect_with_timeout_recovery(
+                    agent_id=agent.agent_id,
+                    session_key=session_key,
+                    wrapper=wrapper,
+                    stream_factory=lambda current: current.send_user_message(content),
+                    progress_callback=progress_callback,
+                    response_callback=response_callback,
+                    restart_factory=lambda: self.provider_runtime.ensure_wrapper(
+                        agent=agent,
+                        channel_id=channel_id,
+                        is_dm=is_dm,
+                        parent_channel_id=parent_channel_id,
+                    ),
+                    stop_session=self.provider_runtime.stop_session,
+                )
             generated_metadata = metadata or self.metadata_generator.generate(
                 user_text=content,
                 assistant_text=response,
@@ -108,9 +126,3 @@ class ConversationService:
             )
             logger.info("user_message_completed")
             return chunk_text(response, limit=self.chunk_limit)
-
-    async def _collect(self, stream) -> str:
-        parts = []
-        async for piece in stream:
-            parts.append(piece)
-        return "".join(parts)
