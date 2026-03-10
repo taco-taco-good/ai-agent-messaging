@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from agent_messaging.providers.codex import CodexWrapper
-from agent_messaging.providers.base import ProviderResponseTimeout
+from agent_messaging.providers.base import ProviderResponseTimeout, ProviderStreamDisconnected
 
 
 class CodexProviderTests(unittest.IsolatedAsyncioTestCase):
@@ -160,6 +160,42 @@ class CodexProviderTests(unittest.IsolatedAsyncioTestCase):
 
             with self.assertRaisesRegex(ProviderResponseTimeout, "did not respond"):
                 async for _chunk in wrapper.send_user_message("__sleep__"):
+                    pass
+
+    async def test_codex_wrapper_retries_fresh_session_after_resume_disconnect(self) -> None:
+        fixture = Path(__file__).parent / "fixtures" / "fake_codex.py"
+        with tempfile.TemporaryDirectory() as tempdir:
+            workspace = Path(tempdir)
+            marker = workspace / ".fake-codex-history"
+            marker.write_text("has-history\n", encoding="utf-8")
+            wrapper = CodexWrapper(
+                executable=sys.executable,
+                base_args=[str(fixture)],
+                default_model="gpt-5",
+                workspace_dir=workspace,
+                provider_session_id="thread-123",
+            )
+
+            chunks = []
+            async for chunk in wrapper.send_user_message("__disconnect__"):
+                chunks.append(chunk)
+
+            self.assertEqual(chunks, ["reply:__disconnect__:gpt-5.3-codex"])
+            self.assertEqual(wrapper.provider_session_id, "thread-123")
+
+    async def test_codex_wrapper_classifies_stream_disconnect_without_history_retry(self) -> None:
+        fixture = Path(__file__).parent / "fixtures" / "fake_codex.py"
+        with tempfile.TemporaryDirectory() as tempdir:
+            workspace = Path(tempdir)
+            wrapper = CodexWrapper(
+                executable=sys.executable,
+                base_args=[str(fixture)],
+                default_model="gpt-5",
+                workspace_dir=workspace,
+            )
+
+            with self.assertRaises(ProviderStreamDisconnected):
+                async for _chunk in wrapper.send_user_message("__disconnect_exec__"):
                     pass
 
     async def test_codex_wrapper_stats_reads_exact_model_from_rollout_log(self) -> None:

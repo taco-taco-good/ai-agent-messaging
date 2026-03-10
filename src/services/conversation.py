@@ -17,7 +17,7 @@ from agent_messaging.memory.writer import MemoryWriter
 from agent_messaging.observability.context import log_context
 from agent_messaging.providers.base import ProgressCallback, ResponseCallback
 from agent_messaging.runtime.transport import chunk_text
-from agent_messaging.services.streaming import collect_with_timeout_recovery
+from agent_messaging.services.streaming import collect_with_timeout_recovery, reset_session_for_retry
 
 
 logger = logging.getLogger(__name__)
@@ -76,19 +76,27 @@ class ConversationService:
         ):
             async with lock:
                 response, wrapper = await collect_with_timeout_recovery(
-                    agent_id=agent.agent_id,
-                    session_key=session_key,
                     wrapper=wrapper,
                     stream_factory=lambda current: current.send_user_message(content),
                     progress_callback=progress_callback,
                     response_callback=response_callback,
-                    restart_factory=lambda: self.provider_runtime.ensure_wrapper(
+                    reset_session=lambda: reset_session_for_retry(
+                        logger_extra={
+                            "agent_id": agent.agent_id,
+                            "channel_id": channel_id,
+                            "is_dm": is_dm,
+                            "parent_channel_id": parent_channel_id,
+                            "provider": agent.provider,
+                            "session_key": session_key,
+                        },
+                        provider_runtime=self.provider_runtime,
+                        session_manager=self.session_manager,
                         agent=agent,
+                        session_key=session_key,
                         channel_id=channel_id,
                         is_dm=is_dm,
                         parent_channel_id=parent_channel_id,
                     ),
-                    stop_session=self.provider_runtime.stop_session,
                 )
             generated_metadata = metadata or self.metadata_generator.generate(
                 user_text=content,

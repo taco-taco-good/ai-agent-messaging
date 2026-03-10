@@ -197,6 +197,15 @@ class ProviderRuntime:
         if wrapper is not None and wrapper.is_alive():
             self._restart_counts.pop(wrapper_key, None)
             self._last_activity[wrapper_key] = _time.monotonic()
+            logger.info(
+                "provider_wrapper_reused",
+                extra={
+                    "agent_id": agent.agent_id,
+                    "session_key": session_key,
+                    "provider": agent.provider,
+                    "provider_session_id": wrapper.provider_session_id or "-",
+                },
+            )
             return session_key, wrapper
 
         if wrapper is not None and not wrapper.is_alive():

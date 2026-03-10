@@ -14,8 +14,11 @@ from agent_messaging.core.models import ModelOption
 from agent_messaging.providers.base import (
     CLIWrapper,
     ProviderError,
+    ProviderProcessKilled,
     ProviderResponseTimeout,
+    ProviderStaleSession,
     ProviderStartupError,
+    ProviderStreamDisconnected,
 )
 
 
@@ -279,6 +282,15 @@ class CodexWrapper(CLIWrapper):
                 stderr_text = stderr.decode("utf-8", errors="replace").strip()
                 stdout_text = "\n".join(stdout_lines).strip()
                 self._capture_runtime_metadata(stdout_text)
+                reconnect_messages = self._extract_reconnect_messages(stderr_text, stdout_text)
+                for reconnect_message in reconnect_messages:
+                    logger.warning(
+                        "codex_stream_reconnect_attempt",
+                        extra={
+                            "provider_session_id": self.provider_session_id,
+                            "reconnect_message": reconnect_message,
+                        },
+                    )
                 if returncode == 0:
                     break
 
@@ -300,6 +312,33 @@ class CodexWrapper(CLIWrapper):
                     self.provider_session_id = ""
                     self.runtime_thread_id = ""
                     continue
+                if (
+                    self._has_history
+                    and attempt == 0
+                    and self._looks_like_stream_disconnect(detail, stderr_text, stdout_text, returncode)
+                ):
+                    logger.warning(
+                        "codex_resume_stream_disconnect_retry",
+                        extra={"provider_session_id": self.provider_session_id},
+                    )
+                    self._has_history = False
+                    self.provider_session_id = ""
+                    self.runtime_thread_id = ""
+                    continue
+                if "no last agent message" in detail.lower():
+                    raise ProviderStaleSession(
+                        "Codex resume failed due to stale session: {0}".format(detail),
+                    )
+                if self._looks_like_stream_disconnect(detail, stderr_text, stdout_text, returncode):
+                    raise ProviderStreamDisconnected(
+                        "Codex stream disconnected before completion: {0}".format(
+                            detail or "unknown error"
+                        ),
+                    )
+                if returncode == -9:
+                    raise ProviderProcessKilled(
+                        "Codex subprocess was killed: {0}".format(detail or "unknown error"),
+                    )
                 raise ProviderError(
                     "Codex exec failed with exit code {0}: {1}".format(
                         returncode,
@@ -483,3 +522,27 @@ class CodexWrapper(CLIWrapper):
             if isinstance(message, str) and message:
                 messages.append(message)
         return "\n".join(messages)
+
+    def _extract_reconnect_messages(self, stderr_text: str, stdout_text: str) -> list[str]:
+        messages: list[str] = []
+        for raw_line in (stderr_text + "\n" + stdout_text).splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if "Reconnecting..." in line or "stream disconnected before completion" in line:
+                messages.append(line)
+        return messages
+
+    def _looks_like_stream_disconnect(
+        self,
+        detail: str,
+        stderr_text: str,
+        stdout_text: str,
+        returncode: int,
+    ) -> bool:
+        combined = "\n".join(part for part in (detail, stderr_text, stdout_text) if part).lower()
+        if "stream disconnected before completion" in combined:
+            return True
+        if "reconnecting..." in combined:
+            return True
+        return returncode == -9 and "request id" in combined

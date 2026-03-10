@@ -117,6 +117,36 @@ class ProviderRuntimeTests(unittest.IsolatedAsyncioTestCase):
             _, second = await runtime.ensure_wrapper(agent, "1", False, None)
             self.assertIs(first, second)
 
+    async def test_startup_can_invalidate_provider_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            store = SessionStore(Path(tempdir) / "runtime" / "sessions.json")
+            manager = SessionManager(store)
+            await manager.upsert(
+                channel_id="1",
+                is_dm=True,
+                agent_id="codex-agent",
+                provider="codex",
+                provider_session_id="thread-1",
+                current_model="alpha",
+            )
+            await manager.upsert(
+                channel_id="2",
+                is_dm=True,
+                agent_id="claude-agent",
+                provider="claude",
+                provider_session_id="thread-2",
+                current_model="beta",
+            )
+
+            removed = await manager.invalidate_provider_sessions(
+                provider="codex",
+                reason="test_cleanup",
+            )
+
+            self.assertEqual(removed, ["discord:dm:1"])
+            self.assertIsNone(await manager.get(channel_id="1", is_dm=True))
+            self.assertIsNotNone(await manager.get(channel_id="2", is_dm=True))
+
 
 class MessagingServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_available_model_options_comes_from_provider_runtime(self) -> None:
@@ -249,6 +279,68 @@ class ConversationServiceTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(chunks, ["ok-after-retry"])
             self.assertEqual(attempts["count"], 2)
+
+    async def test_timeout_retry_clears_persisted_provider_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            agent = AgentConfig(
+                agent_id="reviewer",
+                provider="codex",
+                discord_token="token",
+                workspace_dir=Path(tempdir) / "workspace" / "reviewer",
+                memory_dir=Path(tempdir) / "memory",
+                model="alpha",
+                display_name="Reviewer",
+            )
+            registry = AgentRegistry({"reviewer": agent})
+            store = SessionStore(Path(tempdir) / "runtime" / "sessions.json")
+            session_manager = SessionManager(store)
+            await session_manager.upsert(
+                channel_id="1",
+                is_dm=False,
+                agent_id=agent.agent_id,
+                provider=agent.provider,
+                provider_session_id="stale-thread",
+                current_model=agent.model,
+            )
+            seen_session_ids = []
+            timed_out = {"done": False}
+
+            def _factory(config, session_key, session_record=None):
+                del config
+                del session_key
+                seen_session_ids.append(
+                    session_record.provider_session_id if session_record is not None else None
+                )
+                provider = _TimeoutOnceProvider(default_model=agent.model)
+                provider._timed_out = timed_out["done"]
+                if not timed_out["done"]:
+                    timed_out["done"] = True
+                return provider
+
+            runtime = ProviderRuntime(
+                session_manager=session_manager,
+                provider_factory=_factory,
+            )
+            service = ConversationService(
+                registry=registry,
+                session_manager=session_manager,
+                provider_runtime=runtime,
+            )
+
+            chunks = await service.handle_user_message(
+                agent_id="reviewer",
+                channel_id="1",
+                content="hello",
+                is_dm=False,
+                metadata=FrontmatterMetadata(
+                    tags=["greeting"],
+                    topic="Greeting",
+                    summary="Said hello.",
+                ),
+            )
+
+            self.assertEqual(chunks, ["ok-after-retry"])
+            self.assertEqual(seen_session_ids, ["stale-thread", None])
 
     async def test_handle_user_message_chunks_long_reply(self) -> None:
         class _LongProvider(_FakeProvider):

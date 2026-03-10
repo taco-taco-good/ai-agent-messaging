@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import tempfile
 import textwrap
 import unittest
@@ -202,3 +203,52 @@ class SubagentRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("## Persona", result["response"])
             self.assertIn(str((skills_dir / "reality-checker.md").resolve()), result["response"])
             self.assertFalse(Path(result["workspace_root"]).exists())
+
+    async def test_subagent_emits_observability_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            skills_dir = root / "skills"
+            skills_dir.mkdir()
+            agents_dir = root / "agents"
+            agents_dir.mkdir()
+            (agents_dir / "architect.md").write_text(
+                "---\nname: architect\n---\nDo the work.\n",
+                encoding="utf-8",
+            )
+
+            agent = AgentConfig(
+                agent_id="reviewer",
+                display_name="Reviewer",
+                provider="codex",
+                discord_token="token",
+                workspace_dir=root / "workspace" / "reviewer",
+                memory_dir=root / "memory" / "reviewer",
+                model="alpha",
+                persona="Main assistant persona.",
+            )
+            registry = AgentRegistry({"reviewer": agent})
+            session_manager = SessionManager(SessionStore(root / "runtime" / "sessions.json"))
+            app = AgentMessagingApp(
+                registry=registry,
+                session_manager=session_manager,
+                provider_factory=lambda config, session_key, session_record=None: _SubagentProvider(
+                    config,
+                    default_model=(session_record.current_model if session_record else None)
+                    or config.model,
+                ),
+                subagents_dir=agents_dir,
+                runtime_dir=root / "runtime",
+                skills_dir=skills_dir,
+            )
+
+            with self.assertLogs("agent_messaging.core.subagents", level=logging.INFO) as captured:
+                await app.service.tool_runtime.call(
+                    "subagent.run",
+                    "reviewer",
+                    "architect",
+                    "Do the work.",
+                )
+
+            joined = "\n".join(captured.output)
+            self.assertIn("subagent_started", joined)
+            self.assertIn("subagent_completed", joined)

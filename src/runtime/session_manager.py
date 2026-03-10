@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from agent_messaging.core.models import SessionRecord, utc_now
 from agent_messaging.runtime.session_store import SessionStore
+
+
+logger = logging.getLogger(__name__)
 
 
 class SessionManager:
@@ -90,3 +94,37 @@ class SessionManager:
         await self.store.delete(
             self.session_scope_key(channel_id, is_dm, parent_channel_id)
         )
+
+    async def invalidate_provider_sessions(
+        self,
+        *,
+        provider: str,
+        reason: str,
+    ) -> list[str]:
+        removed = await self.store.delete_where(
+            lambda _session_key, record: record.provider == provider,
+            reason=reason,
+        )
+        if removed:
+            logger.info(
+                "provider_sessions_invalidated",
+                extra={"provider": provider, "reason": reason, "count": len(removed)},
+            )
+        return removed
+
+    def invalidate_provider_sessions_sync(
+        self,
+        *,
+        provider: str,
+        reason: str,
+    ) -> list[str]:
+        removed = self.store.delete_where_sync(
+            lambda _session_key, record: record.provider == provider,
+            reason=reason,
+        )
+        if removed:
+            logger.info(
+                "provider_sessions_invalidated",
+                extra={"provider": provider, "reason": reason, "count": len(removed)},
+            )
+        return removed

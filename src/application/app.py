@@ -189,6 +189,12 @@ def build_app(config_path: Path) -> AgentMessagingApp:
     registry = AgentRegistry(settings.agents)
     session_store = SessionStore(settings.runtime_dir / "sessions.json")
     session_manager = SessionManager(session_store)
+    # Codex thread resume can remain stuck across service restarts, so we
+    # invalidate persisted Codex sessions at startup and force a fresh session.
+    session_manager.invalidate_provider_sessions_sync(
+        provider="codex",
+        reason="startup_codex_resume_isolation",
+    )
     tool_runtime = ToolRuntime()
     AgentMessagingApp._initialize_agents(registry=registry, tool_runtime=tool_runtime)
     load_external_tools(settings.tools_dir, tool_runtime)
