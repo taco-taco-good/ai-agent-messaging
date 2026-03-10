@@ -4,6 +4,7 @@ import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import call, patch
 
 
 def _load_bootstrap_module():
@@ -30,6 +31,19 @@ def _load_status_module():
 
 
 status_module = _load_status_module()
+
+
+def _load_restart_module():
+    path = Path(__file__).resolve().parent.parent / "setup" / "restart.py"
+    spec = importlib.util.spec_from_file_location("setup_restart", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Failed to load setup/restart.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+restart_module = _load_restart_module()
 
 
 class SetupBootstrapTests(unittest.TestCase):
@@ -130,3 +144,118 @@ class SetupBootstrapTests(unittest.TestCase):
         )
         self.assertIn("launchd:", rendered)
         self.assertIn("state: running", rendered)
+
+    def test_restart_launch_agent_uses_kickstart_when_loaded(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root_dir = Path(tempdir)
+            (root_dir / "config").mkdir()
+            (root_dir / "config" / "agents.yaml").write_text("agents: {}\n", encoding="utf-8")
+            (root_dir / ".venv" / "bin").mkdir(parents=True)
+            (root_dir / ".venv" / "bin" / "agent-messaging").write_text("", encoding="utf-8")
+            plist_path = root_dir / "Library" / "LaunchAgents" / "com.ai-agent-messaging.plist"
+            plist_path.parent.mkdir(parents=True)
+            plist_path.write_text("", encoding="utf-8")
+
+            with (
+                patch.object(restart_module.Path, "home", return_value=root_dir),
+                patch.object(restart_module.os, "getuid", return_value=501),
+                patch.object(restart_module.subprocess, "run") as mock_run,
+            ):
+                mock_run.side_effect = [
+                    unittest.mock.Mock(returncode=0, stdout="state = running\n"),
+                    unittest.mock.Mock(returncode=0, stdout=""),
+                    unittest.mock.Mock(returncode=0, stdout="state = running\n"),
+                ]
+                result = restart_module.restart_launch_agent(
+                    root_dir=root_dir,
+                    label="com.ai-agent-messaging",
+                )
+
+            self.assertEqual(result["action"], "kickstart")
+            self.assertEqual(result["state"], "running")
+            self.assertTrue(result["ok"])
+            mock_run.assert_has_calls(
+                [
+                    call(
+                        ["launchctl", "print", "gui/501/com.ai-agent-messaging"],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    ),
+                    call(
+                        ["launchctl", "kickstart", "-k", "gui/501/com.ai-agent-messaging"],
+                        check=True,
+                    ),
+                    call(
+                        ["launchctl", "print", "gui/501/com.ai-agent-messaging"],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    ),
+                ]
+            )
+
+    def test_restart_launch_agent_bootstraps_when_service_not_loaded(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root_dir = Path(tempdir)
+            (root_dir / "config").mkdir()
+            (root_dir / "config" / "agents.yaml").write_text("agents: {}\n", encoding="utf-8")
+            (root_dir / ".venv" / "bin").mkdir(parents=True)
+            (root_dir / ".venv" / "bin" / "agent-messaging").write_text("", encoding="utf-8")
+            plist_path = root_dir / "Library" / "LaunchAgents" / "com.ai-agent-messaging.plist"
+            plist_path.parent.mkdir(parents=True)
+            plist_path.write_text("", encoding="utf-8")
+
+            with (
+                patch.object(restart_module.Path, "home", return_value=root_dir),
+                patch.object(restart_module.os, "getuid", return_value=501),
+                patch.object(restart_module.subprocess, "run") as mock_run,
+            ):
+                mock_run.side_effect = [
+                    unittest.mock.Mock(returncode=113, stdout=""),
+                    unittest.mock.Mock(returncode=0, stdout=""),
+                    unittest.mock.Mock(returncode=0, stdout=""),
+                    unittest.mock.Mock(returncode=0, stdout=""),
+                    unittest.mock.Mock(returncode=0, stdout="state = spawn scheduled\n"),
+                ]
+                result = restart_module.restart_launch_agent(
+                    root_dir=root_dir,
+                    label="com.ai-agent-messaging",
+                )
+
+            self.assertEqual(result["action"], "bootstrap")
+            self.assertEqual(result["state"], "spawn scheduled")
+            self.assertTrue(result["ok"])
+            mock_run.assert_has_calls(
+                [
+                    call(
+                        ["launchctl", "print", "gui/501/com.ai-agent-messaging"],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    ),
+                    call(
+                        [
+                            "launchctl",
+                            "bootstrap",
+                            "gui/501",
+                            str(plist_path),
+                        ],
+                        check=True,
+                    ),
+                    call(
+                        ["launchctl", "enable", "gui/501/com.ai-agent-messaging"],
+                        check=True,
+                    ),
+                    call(
+                        ["launchctl", "kickstart", "-k", "gui/501/com.ai-agent-messaging"],
+                        check=True,
+                    ),
+                    call(
+                        ["launchctl", "print", "gui/501/com.ai-agent-messaging"],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    ),
+                ]
+            )

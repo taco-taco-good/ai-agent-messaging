@@ -97,9 +97,12 @@ def main(argv: list[str] | None = None) -> int:
         print("현재 플랫폼에서는 자동 시작 설정을 건너뜁니다: {0}".format(sys.platform))
 
     print("")
-    print_section("다음 실행 명령")
+    print_section("운영 명령")
     print("  source {0}/bin/activate".format(venv_dir))
     print("  agent-messaging --config {0}".format(config_path))
+    print("  .venv/bin/python setup/status.py")
+    if sys.platform == "darwin":
+        print("  .venv/bin/python setup/restart.py")
     return 0
 
 
