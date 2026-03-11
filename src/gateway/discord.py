@@ -349,7 +349,7 @@ def create_agent_client(app: AgentMessagingApp, agent_id: str):
                 )
             ):
                 logger.info("discord_message_received", extra={"is_dm": context["is_dm"]})
-                responder = _ChannelStreamResponder(message.channel)
+                responder = _ChannelStreamResponder(message.channel, provider=agent.provider)
                 async with message.channel.typing():
                     try:
                         async def _progress(message_text: str) -> None:
@@ -444,6 +444,7 @@ def _extract_content(bot_user: Any, message: Any) -> str:
 _CHUNK_SEND_DELAY = 0.3  # seconds between consecutive chunk sends
 _DISCORD_SELECT_TEXT_LIMIT = 100
 _STREAM_EDIT_LIMIT = 1900
+_STREAM_FLUSH_CHARS = 200
 
 
 def _truncate_select_text(text: str) -> str:
@@ -472,20 +473,35 @@ async def _send_channel_chunks(channel: Any, chunks: List[str]) -> None:
 
 
 class _ChannelStreamResponder:
-    def __init__(self, channel: Any) -> None:
+    def __init__(self, channel: Any, provider: str) -> None:
         self.channel = channel
+        self.provider = provider
+        self._messages: List[Any] = []
         self._sent_response = False
         self._last_progress = ""
+        self._text = ""
+        self._rendered_length = 0
         self._lock = asyncio.Lock()
 
     async def stream_text(self, piece: str) -> None:
         if not piece:
             return
         async with self._lock:
-            await _send_channel_chunks(
-                self.channel,
-                chunk_text(piece, limit=_STREAM_EDIT_LIMIT),
-            )
+            if self.provider == "claude":
+                self._text += piece
+                should_flush = (
+                    len(self._text) - self._rendered_length >= _STREAM_FLUSH_CHARS
+                    or "\n" in piece
+                )
+                if not should_flush:
+                    return
+                await self._sync_messages()
+                self._rendered_length = len(self._text)
+            else:
+                await _send_channel_chunks(
+                    self.channel,
+                    chunk_text(piece, limit=_STREAM_EDIT_LIMIT),
+                )
             self._sent_response = True
 
     async def send_progress(self, message: str) -> None:
@@ -498,9 +514,43 @@ class _ChannelStreamResponder:
             self._last_progress = message
 
     async def finalize(self, chunks: List[str]) -> bool:
-        del chunks
         async with self._lock:
+            if self.provider == "claude":
+                if not self._text:
+                    return False
+                self._text = "".join(chunks)
+                await self._sync_messages(force=True)
+                self._rendered_length = len(self._text)
+                self._sent_response = True
             return self._sent_response
+
+    async def _sync_messages(self, force: bool = False) -> None:
+        chunks = chunk_text(self._text, limit=_STREAM_EDIT_LIMIT)
+        if not chunks:
+            return
+        for index, chunk in enumerate(chunks):
+            if index < len(self._messages):
+                current = self._messages[index]
+                if force or getattr(current, "content", None) != chunk:
+                    try:
+                        await current.edit(content=chunk)
+                    except Exception as exc:
+                        logger.warning(
+                            "discord_stream_edit_failed",
+                            extra={"chunk_index": index, "error": str(exc)},
+                        )
+                        replacement = await self.channel.send(chunk)
+                        self._messages[index] = replacement
+            else:
+                try:
+                    message = await self.channel.send(chunk)
+                except Exception as exc:
+                    logger.warning(
+                        "discord_stream_send_failed",
+                        extra={"chunk_index": index, "error": str(exc)},
+                    )
+                    raise
+                self._messages.append(message)
 
 
 async def _send_interaction_chunks(interaction: Any, chunks: List[str]) -> None:
