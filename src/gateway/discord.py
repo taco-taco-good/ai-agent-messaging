@@ -39,9 +39,18 @@ def require_discord():
 
 
 def _error_extra(exc: BaseException, **extra: object) -> dict[str, object]:
-    payload = {"error": str(exc), "error_code": getattr(exc, "error_code", "internal_error")}
+    payload = {
+        "error": str(exc),
+        "error_code": getattr(exc, "error_code", "internal_error"),
+        "exception_type": type(exc).__name__,
+        "exception_message": str(exc),
+    }
     payload.update(extra)
     return payload
+
+
+def _exc_info(exc: BaseException) -> tuple[type[BaseException], BaseException, object]:
+    return type(exc), exc, exc.__traceback__
 
 
 def create_agent_client(app: AgentMessagingApp, agent_id: str):
@@ -114,13 +123,22 @@ def create_agent_client(app: AgentMessagingApp, agent_id: str):
                     logger.warning(
                         "discord_interaction_validation_failed",
                         extra=_error_extra(exc),
+                        exc_info=_exc_info(exc),
                     )
                     chunks = chunk_text(str(exc))
                 except ProviderResponseTimeout as exc:
-                    logger.warning("discord_interaction_timeout", extra=_error_extra(exc))
+                    logger.warning(
+                        "discord_interaction_timeout",
+                        extra=_error_extra(exc),
+                        exc_info=_exc_info(exc),
+                    )
                     chunks = ["응답 생성에 시간이 걸리고 있습니다."]
                 except (ProviderStartupError, ProviderError) as exc:
-                    logger.error("discord_interaction_provider_error", extra=_error_extra(exc))
+                    logger.error(
+                        "discord_interaction_provider_error",
+                        extra=_error_extra(exc),
+                        exc_info=_exc_info(exc),
+                    )
                     chunks = chunk_text(str(exc))
                 except Exception as exc:
                     logger.exception("discord_interaction_unexpected_error", extra=_error_extra(exc))
@@ -277,13 +295,25 @@ def create_agent_client(app: AgentMessagingApp, agent_id: str):
                             progress_callback=_progress,
                         )
                     except ProviderResponseTimeout as exc:
-                        logger.warning("discord_cli_timeout", extra=_error_extra(exc))
+                        logger.warning(
+                            "discord_cli_timeout",
+                            extra=_error_extra(exc),
+                            exc_info=_exc_info(exc),
+                        )
                         chunks = ["응답 생성에 시간이 걸리고 있습니다."]
                     except (CommandValidationError, InteractionValidationError) as exc:
-                        logger.warning("discord_cli_validation_failed", extra=_error_extra(exc))
+                        logger.warning(
+                            "discord_cli_validation_failed",
+                            extra=_error_extra(exc),
+                            exc_info=_exc_info(exc),
+                        )
                         chunks = chunk_text(str(exc))
                     except (ProviderStartupError, ProviderError) as exc:
-                        logger.error("discord_cli_provider_error", extra=_error_extra(exc))
+                        logger.error(
+                            "discord_cli_provider_error",
+                            extra=_error_extra(exc),
+                            exc_info=_exc_info(exc),
+                        )
                         chunks = chunk_text(str(exc))
                     except Exception as exc:
                         logger.exception("discord_cli_unexpected_error", extra=_error_extra(exc))
@@ -339,13 +369,25 @@ def create_agent_client(app: AgentMessagingApp, agent_id: str):
                             response_callback=_response,
                         )
                     except ProviderResponseTimeout as exc:
-                        logger.warning("discord_message_timeout", extra=_error_extra(exc))
+                        logger.warning(
+                            "discord_message_timeout",
+                            extra=_error_extra(exc),
+                            exc_info=_exc_info(exc),
+                        )
                         chunks = ["응답 생성에 시간이 걸리고 있습니다."]
                     except (CommandValidationError, InteractionValidationError) as exc:
-                        logger.warning("discord_message_validation_failed", extra=_error_extra(exc))
+                        logger.warning(
+                            "discord_message_validation_failed",
+                            extra=_error_extra(exc),
+                            exc_info=_exc_info(exc),
+                        )
                         chunks = chunk_text(str(exc))
                     except (ProviderStartupError, ProviderError) as exc:
-                        logger.error("discord_message_provider_error", extra=_error_extra(exc))
+                        logger.error(
+                            "discord_message_provider_error",
+                            extra=_error_extra(exc),
+                            exc_info=_exc_info(exc),
+                        )
                         chunks = chunk_text(str(exc))
                     except Exception as exc:
                         logger.exception("discord_message_unexpected_error", extra=_error_extra(exc))
@@ -402,7 +444,6 @@ def _extract_content(bot_user: Any, message: Any) -> str:
 _CHUNK_SEND_DELAY = 0.3  # seconds between consecutive chunk sends
 _DISCORD_SELECT_TEXT_LIMIT = 100
 _STREAM_EDIT_LIMIT = 1900
-_STREAM_FLUSH_CHARS = 200
 
 
 def _truncate_select_text(text: str) -> str:
@@ -433,9 +474,7 @@ async def _send_channel_chunks(channel: Any, chunks: List[str]) -> None:
 class _ChannelStreamResponder:
     def __init__(self, channel: Any) -> None:
         self.channel = channel
-        self._messages: List[Any] = []
-        self._text = ""
-        self._rendered_length = 0
+        self._sent_response = False
         self._last_progress = ""
         self._lock = asyncio.Lock()
 
@@ -443,15 +482,11 @@ class _ChannelStreamResponder:
         if not piece:
             return
         async with self._lock:
-            self._text += piece
-            should_flush = (
-                len(self._text) - self._rendered_length >= _STREAM_FLUSH_CHARS
-                or "\n" in piece
+            await _send_channel_chunks(
+                self.channel,
+                chunk_text(piece, limit=_STREAM_EDIT_LIMIT),
             )
-            if not should_flush:
-                return
-            await self._sync_messages()
-            self._rendered_length = len(self._text)
+            self._sent_response = True
 
     async def send_progress(self, message: str) -> None:
         if not message:
@@ -463,41 +498,9 @@ class _ChannelStreamResponder:
             self._last_progress = message
 
     async def finalize(self, chunks: List[str]) -> bool:
+        del chunks
         async with self._lock:
-            if not self._text:
-                return False
-            self._text = "".join(chunks)
-            await self._sync_messages(force=True)
-            self._rendered_length = len(self._text)
-            return True
-
-    async def _sync_messages(self, force: bool = False) -> None:
-        chunks = chunk_text(self._text, limit=_STREAM_EDIT_LIMIT)
-        if not chunks:
-            return
-        for index, chunk in enumerate(chunks):
-            if index < len(self._messages):
-                current = self._messages[index]
-                if force or getattr(current, "content", None) != chunk:
-                    try:
-                        await current.edit(content=chunk)
-                    except Exception as exc:
-                        logger.warning(
-                            "discord_stream_edit_failed",
-                            extra={"chunk_index": index, "error": str(exc)},
-                        )
-                        replacement = await self.channel.send(chunk)
-                        self._messages[index] = replacement
-            else:
-                try:
-                    message = await self.channel.send(chunk)
-                except Exception as exc:
-                    logger.warning(
-                        "discord_stream_send_failed",
-                        extra={"chunk_index": index, "error": str(exc)},
-                    )
-                    raise
-                self._messages.append(message)
+            return self._sent_response
 
 
 async def _send_interaction_chunks(interaction: Any, chunks: List[str]) -> None:

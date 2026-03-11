@@ -1,13 +1,27 @@
 from __future__ import annotations
 
+import asyncio
+import io
+import logging
+import os
 import sqlite3
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
+from agent_messaging.observability.logging import ContextFilter, KeyValueFormatter
 from agent_messaging.providers.codex import CodexWrapper
-from agent_messaging.providers.base import ProviderResponseTimeout, ProviderStreamDisconnected
+from agent_messaging.providers.base import (
+    ProviderResponseTimeout,
+    ProviderStreamDisconnected,
+    ProviderStreamParseError,
+)
+
+
+class _BrokenStdout:
+    async def read(self, _size: int) -> bytes:
+        raise ValueError("pipe is closed")
 
 
 class CodexProviderTests(unittest.IsolatedAsyncioTestCase):
@@ -147,6 +161,30 @@ class CodexProviderTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(chunks, ["reply:__sleep__:gpt-5.3-codex"])
             self.assertEqual(progress, ["응답 생성에 시간이 걸리고 있습니다. 계속 처리 중입니다."])
 
+    async def test_codex_wrapper_disables_warning_progress_when_timeout_notice_is_off(self) -> None:
+        fixture = Path(__file__).parent / "fixtures" / "fake_codex.py"
+        with tempfile.TemporaryDirectory() as tempdir:
+            wrapper = CodexWrapper(
+                executable=sys.executable,
+                base_args=[str(fixture)],
+                default_model="gpt-5",
+                workspace_dir=Path(tempdir),
+                warning_timeout=None,
+                hard_timeout=0.5,
+            )
+            progress = []
+
+            async def _progress(message: str) -> None:
+                progress.append(message)
+
+            wrapper.set_progress_callback(_progress)
+            chunks = []
+            async for chunk in wrapper.send_user_message("__sleep__"):
+                chunks.append(chunk)
+
+            self.assertEqual(chunks, ["reply:__sleep__:gpt-5.3-codex"])
+            self.assertEqual(progress, [])
+
     async def test_codex_wrapper_times_out_stalled_exec(self) -> None:
         fixture = Path(__file__).parent / "fixtures" / "fake_codex.py"
         with tempfile.TemporaryDirectory() as tempdir:
@@ -277,3 +315,207 @@ class CodexProviderTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Exact model: gpt-5.4", stats[0])
             self.assertIn("Source: codex rollout log", stats[0])
             self.assertIn("Thread: thread-123", stats[0])
+
+    async def test_codex_wrapper_streams_large_json_without_newline_separator(self) -> None:
+        fixture = Path(__file__).parent / "fixtures" / "fake_codex.py"
+        with tempfile.TemporaryDirectory() as tempdir:
+            wrapper = CodexWrapper(
+                executable=sys.executable,
+                base_args=[str(fixture)],
+                default_model="gpt-5.4",
+                workspace_dir=Path(tempdir),
+            )
+
+            chunks = []
+            async for chunk in wrapper.send_user_message("__long_json_line__"):
+                chunks.append(chunk)
+
+            self.assertEqual(len(chunks), 1)
+            self.assertEqual(chunks[0], "x" * 70000)
+
+    async def test_codex_wrapper_streams_huge_json_without_premature_buffer_failure(self) -> None:
+        fixture = Path(__file__).parent / "fixtures" / "fake_codex.py"
+        with tempfile.TemporaryDirectory() as tempdir:
+            wrapper = CodexWrapper(
+                executable=sys.executable,
+                base_args=[str(fixture)],
+                default_model="gpt-5.4",
+                workspace_dir=Path(tempdir),
+            )
+
+            chunks = []
+            async for chunk in wrapper.send_user_message("__huge_json_line__"):
+                chunks.append(chunk)
+
+            self.assertEqual(len(chunks), 1)
+            self.assertEqual(chunks[0], "x" * 270000)
+
+    async def test_codex_wrapper_logs_parse_context_for_invalid_long_stream(self) -> None:
+        fixture = Path(__file__).parent / "fixtures" / "fake_codex.py"
+        with tempfile.TemporaryDirectory() as tempdir:
+            wrapper = CodexWrapper(
+                executable=sys.executable,
+                base_args=[str(fixture)],
+                default_model="gpt-5.4",
+                workspace_dir=Path(tempdir),
+            )
+
+            stream = io.StringIO()
+            handler = logging.StreamHandler(stream)
+            handler.setFormatter(KeyValueFormatter())
+            handler.addFilter(ContextFilter())
+            logger = logging.getLogger("agent_messaging.providers.codex")
+            previous_handlers = logger.handlers[:]
+            previous_propagate = logger.propagate
+            previous_level = logger.level
+            logger.handlers = [handler]
+            logger.propagate = False
+            logger.setLevel(logging.ERROR)
+            try:
+                with self.assertRaises(ProviderStreamParseError) as raised:
+                    async for _chunk in wrapper.send_user_message("__invalid_long_line__"):
+                        pass
+            finally:
+                logger.handlers = previous_handlers
+                logger.propagate = previous_propagate
+                logger.setLevel(previous_level)
+
+            self.assertIn("buffer_chars=", str(raised.exception))
+            joined = stream.getvalue()
+            self.assertIn("codex_stream_parse_failed", joined)
+            self.assertIn('error_code="provider_stream_parse_error"', joined)
+            self.assertIsInstance(raised.exception.__cause__, ValueError)
+            self.assertIn('exception_type="ValueError"', joined)
+            self.assertIn('stream_stage="buffer"', joined)
+            self.assertIn("stream_buffer_chars=", joined)
+            self.assertIn("stream_chunk_count=", joined)
+            self.assertIn("stream_record_count=", joined)
+            self.assertIn("stream_buffer_preview=", joined)
+
+    async def test_codex_wrapper_logs_record_context_for_invalid_json_event(self) -> None:
+        fixture = Path(__file__).parent / "fixtures" / "fake_codex.py"
+        with tempfile.TemporaryDirectory() as tempdir:
+            wrapper = CodexWrapper(
+                executable=sys.executable,
+                base_args=[str(fixture)],
+                default_model="gpt-5.4",
+                workspace_dir=Path(tempdir),
+            )
+
+            stream = io.StringIO()
+            handler = logging.StreamHandler(stream)
+            handler.setFormatter(KeyValueFormatter())
+            handler.addFilter(ContextFilter())
+            logger = logging.getLogger("agent_messaging.providers.codex")
+            previous_handlers = logger.handlers[:]
+            previous_propagate = logger.propagate
+            previous_level = logger.level
+            logger.handlers = [handler]
+            logger.propagate = False
+            logger.setLevel(logging.ERROR)
+            try:
+                with self.assertRaises(ProviderStreamParseError) as raised:
+                    async for _chunk in wrapper.send_user_message("__invalid_json_event__"):
+                        pass
+            finally:
+                logger.handlers = previous_handlers
+                logger.propagate = previous_propagate
+                logger.setLevel(previous_level)
+
+            self.assertIn("stage=decode", str(raised.exception))
+            self.assertEqual(type(raised.exception.__cause__).__name__, "JSONDecodeError")
+            joined = stream.getvalue()
+            self.assertIn("codex_stream_parse_failed", joined)
+            self.assertIn('stream_stage="decode"', joined)
+            self.assertIn("stream_record_preview=", joined)
+            self.assertIn("stream_record_source=", joined)
+            self.assertIn('subcommand="exec"', joined)
+
+    async def test_codex_wrapper_wraps_stdout_read_value_error_with_read_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            wrapper = CodexWrapper(
+                executable=sys.executable,
+                default_model="gpt-5.4",
+                workspace_dir=Path(tempdir),
+            )
+
+            class _Process:
+                def kill(self) -> None:
+                    return None
+
+                async def wait(self) -> int:
+                    return 0
+
+            with self.assertRaises(ProviderStreamParseError) as raised:
+                records = wrapper._iter_stream_records(
+                    _BrokenStdout(),
+                    process=_Process(),
+                    started_monotonic=asyncio.get_running_loop().time(),
+                )
+                await anext(records)
+
+            self.assertIn("stage=read", str(raised.exception))
+            self.assertIsInstance(raised.exception.__cause__, ValueError)
+
+    async def test_codex_wrapper_logs_explicit_cause_for_non_object_json_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            wrapper = CodexWrapper(
+                executable=sys.executable,
+                default_model="gpt-5.4",
+                workspace_dir=Path(tempdir),
+            )
+
+            stream = io.StringIO()
+            handler = logging.StreamHandler(stream)
+            handler.setFormatter(KeyValueFormatter())
+            handler.addFilter(ContextFilter())
+            logger = logging.getLogger("agent_messaging.providers.codex")
+            previous_handlers = logger.handlers[:]
+            previous_propagate = logger.propagate
+            previous_level = logger.level
+            logger.handlers = [handler]
+            logger.propagate = False
+            logger.setLevel(logging.ERROR)
+            try:
+                with self.assertRaises(ProviderStreamParseError) as raised:
+                    wrapper._parse_stream_payload(
+                        "[]",
+                        source="line:chunk=1:record=1:chars=2",
+                        parser_preview="[]",
+                    )
+            finally:
+                logger.handlers = previous_handlers
+                logger.propagate = previous_propagate
+                logger.setLevel(previous_level)
+
+            self.assertIn("decoded JSON payload is not an object", str(raised.exception))
+            self.assertIsInstance(raised.exception.__cause__, ValueError)
+            joined = stream.getvalue()
+            self.assertIn("codex_stream_parse_failed", joined)
+            self.assertIn('exception_type="ValueError"', joined)
+            self.assertIn("decoded JSON payload is not an object", joined)
+            self.assertNotIn("NoneType: None", joined)
+
+    async def test_codex_wrapper_cleans_up_process_after_stream_parse_failure(self) -> None:
+        fixture = Path(__file__).parent / "fixtures" / "fake_codex.py"
+        with tempfile.TemporaryDirectory() as tempdir:
+            workspace = Path(tempdir)
+            wrapper = CodexWrapper(
+                executable=sys.executable,
+                base_args=[str(fixture)],
+                default_model="gpt-5.4",
+                workspace_dir=workspace,
+            )
+
+            with self.assertRaises(ProviderStreamParseError):
+                async for _chunk in wrapper.send_user_message("__invalid_long_line_with_sleep__"):
+                    pass
+
+            pid_path = workspace / ".fake-codex-pid"
+            self.assertTrue(pid_path.exists())
+            child_pid = int(pid_path.read_text(encoding="utf-8").strip())
+
+            await asyncio.sleep(0.1)
+
+            with self.assertRaises(ProcessLookupError):
+                os.kill(child_pid, 0)
