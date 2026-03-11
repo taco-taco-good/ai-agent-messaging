@@ -46,6 +46,12 @@ class ProviderStreamDisconnected(ProviderError):
     error_code = "provider_stream_disconnected"
 
 
+class ProviderStreamParseError(ProviderError):
+    """Raised when a provider stream cannot be parsed safely."""
+
+    error_code = "provider_stream_parse_error"
+
+
 class ProviderProcessKilled(ProviderError):
     """Raised when a provider subprocess is terminated unexpectedly."""
 

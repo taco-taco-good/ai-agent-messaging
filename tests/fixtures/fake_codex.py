@@ -82,6 +82,43 @@ def main() -> int:
     sys.stdout.write('{"type":"thread.started","thread_id":"thread-123"}\n')
     sys.stdout.write('{"type":"turn.started"}\n')
     text = "resume:{0}:{1}".format(prompt, model) if resumed else "reply:{0}:{1}".format(prompt, model)
+    if prompt == "__long_json_line__":
+        payload = (
+            '{"type":"item.completed","item":{"type":"agent_message","text":"'
+            + ("x" * 70000)
+            + '"}}'
+        )
+        sys.stdout.write(payload)
+        if marker is not None:
+            marker.write_text("has-history\n", encoding="utf-8")
+        if output_path is not None:
+            output_path.write_text("x" * 70000, encoding="utf-8")
+        return 0
+    if prompt == "__huge_json_line__":
+        payload = (
+            '{"type":"item.completed","item":{"type":"agent_message","text":"'
+            + ("x" * 270000)
+            + '"}}'
+        )
+        sys.stdout.write(payload)
+        if marker is not None:
+            marker.write_text("has-history\n", encoding="utf-8")
+        if output_path is not None:
+            output_path.write_text("x" * 270000, encoding="utf-8")
+        return 0
+    if prompt == "__invalid_long_line__":
+        sys.stdout.write("x" * 300000)
+        return 0
+    if prompt == "__invalid_long_line_with_sleep__":
+        if cwd is not None:
+            (cwd / ".fake-codex-pid").write_text(str(os.getpid()), encoding="utf-8")
+        sys.stdout.write("x" * 300000)
+        sys.stdout.flush()
+        time.sleep(5)
+        return 0
+    if prompt == "__invalid_json_event__":
+        sys.stdout.write('{"type":"item.completed","item":{"type":"agent_message","text":"broken"}\n')
+        return 0
     if marker is not None:
         marker.write_text("has-history\n", encoding="utf-8")
     if output_path is not None:

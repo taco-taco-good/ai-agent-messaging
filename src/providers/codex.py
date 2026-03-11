@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import json
 import logging
 import sqlite3
 import tempfile
 import time
 import uuid
+from contextlib import suppress
+from dataclasses import dataclass
+from json import JSONDecodeError, JSONDecoder
 from pathlib import Path
-from typing import Dict, Optional, Sequence
+from typing import AsyncIterator, Dict, Optional, Sequence
 
 from agent_messaging.core.models import ModelOption
 from agent_messaging.providers.base import (
@@ -16,6 +20,7 @@ from agent_messaging.providers.base import (
     ProviderError,
     ProviderProcessKilled,
     ProviderResponseTimeout,
+    ProviderStreamParseError,
     ProviderStaleSession,
     ProviderStartupError,
     ProviderStreamDisconnected,
@@ -30,6 +35,92 @@ LEGACY_MODEL_ALIASES = {
     "gpt-5-codex-spark": "gpt-5.3-codex-spark",
 }
 _DEFAULT_REASONING_EFFORT = "medium"
+_STDOUT_READ_CHUNK_SIZE = 4096
+_STREAM_BUFFER_LIMIT = 256 * 1024
+_LOG_PREVIEW_LIMIT = 240
+
+
+@dataclass
+class _StreamRecord:
+    raw: str
+    source: str
+
+
+class _JsonStreamBuffer:
+    def __init__(self, *, max_buffer_chars: int) -> None:
+        self._buffer = ""
+        self._max_buffer_chars = max_buffer_chars
+        self._decoder = JSONDecoder()
+
+    def feed(self, text: str) -> list[_StreamRecord]:
+        self._buffer += text
+        records: list[_StreamRecord] = []
+        records.extend(self._drain_lines())
+        if "\n" not in self._buffer and len(self._buffer) > self._max_buffer_chars:
+            records.extend(self._drain_json_objects(strict=False))
+            if len(self._buffer) > self._max_buffer_chars and self._exceeds_limit_without_json_start():
+                raise ValueError("stream buffer exceeded limit without a JSON object boundary")
+        return records
+
+    def finalize(self) -> list[_StreamRecord]:
+        records = self._drain_lines()
+        records.extend(self._drain_json_objects(strict=False))
+        tail = self._buffer.strip()
+        self._buffer = ""
+        if tail:
+            records.append(_StreamRecord(raw=tail, source="tail"))
+        return records
+
+    @property
+    def buffer_chars(self) -> int:
+        return len(self._buffer)
+
+    @property
+    def preview(self) -> str:
+        return _truncate_preview(self._buffer)
+
+    def _drain_lines(self) -> list[_StreamRecord]:
+        records: list[_StreamRecord] = []
+        while True:
+            newline_index = self._buffer.find("\n")
+            if newline_index < 0:
+                return records
+            line = self._buffer[:newline_index]
+            self._buffer = self._buffer[newline_index + 1 :]
+            stripped = line.strip()
+            if stripped:
+                records.append(_StreamRecord(raw=stripped, source="line"))
+
+    def _drain_json_objects(self, *, strict: bool) -> list[_StreamRecord]:
+        records: list[_StreamRecord] = []
+        while self._buffer:
+            original_length = len(self._buffer)
+            stripped = self._buffer.lstrip()
+            whitespace = original_length - len(stripped)
+            if not stripped:
+                self._buffer = ""
+                break
+            if not stripped.startswith("{"):
+                if strict:
+                    raise ValueError("stream buffer exceeded limit without a JSON object boundary")
+                break
+            try:
+                _, end = self._decoder.raw_decode(stripped)
+            except JSONDecodeError:
+                if strict:
+                    raise ValueError("stream buffer exceeded limit before a complete JSON object was received")
+                break
+            raw = stripped[:end].strip()
+            self._buffer = stripped[end:]
+            if whitespace:
+                self._buffer = (" " * whitespace) + self._buffer
+            if raw:
+                records.append(_StreamRecord(raw=raw, source="json_object"))
+        return records
+
+    def _exceeds_limit_without_json_start(self) -> bool:
+        stripped = self._buffer.lstrip()
+        return bool(stripped) and not stripped.startswith("{")
 
 
 class CodexWrapper(CLIWrapper):
@@ -85,8 +176,8 @@ class CodexWrapper(CLIWrapper):
         use_pty: bool = False,
         provider_session_id: Optional[str] = None,
         codex_home: Optional[Path] = None,
-        warning_timeout: float = 60.0,
-        hard_timeout: float = 180.0,
+        warning_timeout: float | None = None,
+        hard_timeout: float = 1200.0,
     ) -> None:
         super().__init__(default_model=default_model)
         self.executable = executable or self.default_command
@@ -231,56 +322,45 @@ class CodexWrapper(CLIWrapper):
                     process.kill()
                     await process.wait()
                     raise ProviderError("Codex streaming stdout is not available.")
-                stdout_lines: list[str] = []
+                stdout_records: list[str] = []
                 response_parts: list[str] = []
-                warned = False
-                while True:
-                    elapsed = asyncio.get_running_loop().time() - started_monotonic
-                    if not warned and elapsed >= self.warning_timeout:
-                        warned = True
-                        self._timeout_warning_issued = True
-                        await self.emit_progress("응답 생성에 시간이 걸리고 있습니다. 계속 처리 중입니다.")
-                    remaining = self.hard_timeout - elapsed
-                    if remaining <= 0:
-                        process.kill()
-                        await process.wait()
-                        raise ProviderResponseTimeout(
-                            "Codex did not respond within {0} seconds.".format(self.hard_timeout)
+                stream_failed = False
+                try:
+                    async for record in self._iter_stream_records(
+                        process.stdout,
+                        process=process,
+                        started_monotonic=started_monotonic,
+                    ):
+                        raw_line = record.raw
+                        stdout_records.append(raw_line)
+                        payload = self._parse_stream_payload(
+                            raw_line,
+                            source=record.source,
+                            parser_preview=_truncate_preview(_stdout_text_preview(stdout_records)),
                         )
-                    try:
-                        line = await asyncio.wait_for(
-                            process.stdout.readline(),
-                            timeout=min(1.0, remaining),
-                        )
-                    except asyncio.TimeoutError:
-                        continue
-                    if not line:
-                        break
-                    raw_line = line.decode("utf-8", errors="replace").strip()
-                    if not raw_line:
-                        continue
-                    stdout_lines.append(raw_line)
-                    try:
-                        payload = json.loads(raw_line)
-                    except json.JSONDecodeError:
-                        continue
-                    if payload.get("type") == "thread.started":
-                        thread_id = payload.get("thread_id")
-                        if isinstance(thread_id, str) and thread_id:
-                            self.provider_session_id = thread_id
-                            self.runtime_thread_id = thread_id
-                    elif payload.get("type") == "item.completed":
-                        item = payload.get("item") or {}
-                        if isinstance(item, dict) and item.get("type") == "agent_message":
-                            text = item.get("text")
-                            if isinstance(text, str) and text:
-                                response_parts.append(text)
-                                yield text
+                        if payload.get("type") == "thread.started":
+                            thread_id = payload.get("thread_id")
+                            if isinstance(thread_id, str) and thread_id:
+                                self.provider_session_id = thread_id
+                                self.runtime_thread_id = thread_id
+                        elif payload.get("type") == "item.completed":
+                            item = payload.get("item") or {}
+                            if isinstance(item, dict) and item.get("type") == "agent_message":
+                                text = item.get("text")
+                                if isinstance(text, str) and text:
+                                    response_parts.append(text)
+                                    yield text
+                except BaseException:
+                    stream_failed = True
+                    raise
+                finally:
+                    if stream_failed:
+                        await self._cleanup_failed_process(process)
 
                 stderr = await process.stderr.read() if process.stderr is not None else b""
                 returncode = await process.wait()
                 stderr_text = stderr.decode("utf-8", errors="replace").strip()
-                stdout_text = "\n".join(stdout_lines).strip()
+                stdout_text = "\n".join(stdout_records).strip()
                 self._capture_runtime_metadata(stdout_text)
                 reconnect_messages = self._extract_reconnect_messages(stderr_text, stdout_text)
                 for reconnect_message in reconnect_messages:
@@ -357,6 +437,208 @@ class CodexWrapper(CLIWrapper):
             self._has_history = bool(self.provider_session_id)
             if not response_parts and response:
                 yield response
+
+    async def _cleanup_failed_process(self, process: asyncio.subprocess.Process) -> None:
+        if process.returncode is None:
+            with suppress(ProcessLookupError):
+                process.kill()
+        with suppress(Exception):
+            await process.wait()
+        if process.stderr is not None:
+            with suppress(Exception):
+                await process.stderr.read()
+
+    async def _iter_stream_records(
+        self,
+        stdout,
+        *,
+        process: asyncio.subprocess.Process,
+        started_monotonic: float,
+    ) -> AsyncIterator[_StreamRecord]:
+        parser = _JsonStreamBuffer(max_buffer_chars=_STREAM_BUFFER_LIMIT)
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        warned = False
+        chunk_count = 0
+        total_chars = 0
+        record_count = 0
+        while True:
+            elapsed = asyncio.get_running_loop().time() - started_monotonic
+            if (
+                not warned
+                and self.warning_timeout is not None
+                and self.warning_timeout > 0
+                and elapsed >= self.warning_timeout
+            ):
+                warned = True
+                self._timeout_warning_issued = True
+                await self.emit_progress("응답 생성에 시간이 걸리고 있습니다. 계속 처리 중입니다.")
+            remaining = self.hard_timeout - elapsed
+            if remaining <= 0:
+                process.kill()
+                await process.wait()
+                raise ProviderResponseTimeout(
+                    "Codex did not respond within {0} seconds.".format(self.hard_timeout)
+                )
+            try:
+                chunk = await asyncio.wait_for(
+                    stdout.read(_STDOUT_READ_CHUNK_SIZE),
+                    timeout=min(1.0, remaining),
+                )
+            except asyncio.TimeoutError:
+                continue
+            except ValueError as exc:
+                raise self._stream_parse_error(
+                    "Codex stream read failed.",
+                    parser=parser,
+                    cause=exc,
+                    stage="read",
+                    chunk_count=chunk_count,
+                    record_count=record_count,
+                    total_chars=total_chars,
+                ) from exc
+            if not chunk:
+                break
+            text = decoder.decode(chunk)
+            chunk_count += 1
+            total_chars += len(text)
+            try:
+                for record in parser.feed(text):
+                    record_count += 1
+                    record.source = "{0}:chunk={1}:record={2}:chars={3}".format(
+                        record.source,
+                        chunk_count,
+                        record_count,
+                        total_chars,
+                    )
+                    yield record
+            except ValueError as exc:
+                raise self._stream_parse_error(
+                    "Codex stream framing failed while buffering stdout.",
+                    parser=parser,
+                    cause=exc,
+                    stage="buffer",
+                    chunk_count=chunk_count,
+                    record_count=record_count,
+                    total_chars=total_chars,
+                ) from exc
+
+        tail = decoder.decode(b"", final=True)
+        if tail:
+            total_chars += len(tail)
+            try:
+                for record in parser.feed(tail):
+                    record_count += 1
+                    record.source = "{0}:flush:record={1}:chars={2}".format(
+                        record.source,
+                        record_count,
+                        total_chars,
+                    )
+                    yield record
+            except ValueError as exc:
+                raise self._stream_parse_error(
+                    "Codex stream framing failed while flushing stdout.",
+                    parser=parser,
+                    cause=exc,
+                    stage="flush",
+                    chunk_count=chunk_count,
+                    record_count=record_count,
+                    total_chars=total_chars,
+                ) from exc
+        for record in parser.finalize():
+            record_count += 1
+            record.source = "{0}:finalize:record={1}:chars={2}".format(
+                record.source,
+                record_count,
+                total_chars,
+            )
+            yield record
+
+    def _parse_stream_payload(
+        self,
+        raw_line: str,
+        *,
+        source: str,
+        parser_preview: str,
+    ) -> dict:
+        try:
+            payload = json.loads(raw_line)
+        except json.JSONDecodeError as exc:
+            raise self._stream_parse_error(
+                "Codex stream JSON decode failed.",
+                parser_preview=parser_preview,
+                cause=exc,
+                stage="decode",
+                raw_record=raw_line,
+                record_source=source,
+            ) from exc
+        if not isinstance(payload, dict):
+            cause = ValueError("decoded JSON payload is not an object")
+            raise self._stream_parse_error(
+                "Codex stream JSON payload must be an object.",
+                parser_preview=parser_preview,
+                cause=cause,
+                stage="decode",
+                raw_record=raw_line,
+                record_source=source,
+            ) from cause
+        return payload
+
+    def _stream_parse_error(
+        self,
+        message: str,
+        *,
+        parser: _JsonStreamBuffer | None = None,
+        parser_preview: str | None = None,
+        cause: BaseException,
+        stage: str,
+        chunk_count: int | None = None,
+        record_count: int | None = None,
+        total_chars: int | None = None,
+        raw_record: str | None = None,
+        record_source: str | None = None,
+    ) -> ProviderStreamParseError:
+        resolved_preview = parser.preview if parser is not None else (parser_preview or "-")
+        error = ProviderStreamParseError(
+            (
+                "{0} provider={1} stage={2} buffer_chars={3} chunk_count={4} "
+                "record_count={5} total_chars={6} record_source={7} preview={8!r} "
+                "record_preview={9!r} cause={10}: {11}"
+            ).format(
+                message,
+                self.provider_name,
+                stage,
+                parser.buffer_chars if parser is not None else 0,
+                chunk_count if chunk_count is not None else "-",
+                record_count if record_count is not None else "-",
+                total_chars if total_chars is not None else "-",
+                record_source or "-",
+                resolved_preview,
+                _truncate_preview(raw_record or ""),
+                type(cause).__name__,
+                str(cause),
+            )
+        )
+        logger.error(
+            "codex_stream_parse_failed",
+            extra={
+                "provider": self.provider_name,
+                "provider_session_id": self.provider_session_id or "-",
+                "error_code": error.error_code,
+                "stream_stage": stage,
+                "stream_buffer_chars": parser.buffer_chars if parser is not None else 0,
+                "stream_buffer_preview": resolved_preview,
+                "stream_chunk_count": chunk_count,
+                "stream_record_count": record_count,
+                "stream_total_chars": total_chars,
+                "stream_record_source": record_source,
+                "stream_record_preview": _truncate_preview(raw_record or ""),
+                "subcommand": "resume" if self._has_history else "exec",
+                "exception_type": type(cause).__name__,
+                "exception_message": str(cause),
+            },
+            exc_info=(type(cause), cause, cause.__traceback__),
+        )
+        return error
 
     def _build_command(self, prompt: str, output_path: Path) -> Sequence[str]:
         model = self.current_model or ""
@@ -546,3 +828,16 @@ class CodexWrapper(CLIWrapper):
         if "reconnecting..." in combined:
             return True
         return returncode == -9 and "request id" in combined
+
+
+def _truncate_preview(text: str) -> str:
+    compact = " ".join(text.split())
+    if len(compact) <= _LOG_PREVIEW_LIMIT:
+        return compact
+    return "{0}...".format(compact[: _LOG_PREVIEW_LIMIT - 3])
+
+
+def _stdout_text_preview(stdout_records: Sequence[str]) -> str:
+    if not stdout_records:
+        return ""
+    return "\n".join(stdout_records[-5:])

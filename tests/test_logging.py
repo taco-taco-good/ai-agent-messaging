@@ -9,6 +9,7 @@ import unittest
 from agent_messaging.core.errors import InteractionValidationError
 from agent_messaging.observability.context import clear_log_context, log_context, new_request_context
 from agent_messaging.observability.logging import ContextFilter, JsonFormatter, KeyValueFormatter, setup_logging
+from agent_messaging.providers.base import ProviderStreamParseError
 
 
 class LoggingTests(unittest.TestCase):
@@ -90,3 +91,34 @@ class LoggingTests(unittest.TestCase):
                 os.environ.pop("LOG_FORMAT", None)
             else:
                 os.environ["LOG_FORMAT"] = previous
+
+    def test_formatter_includes_exception_type_and_traceback_for_handled_provider_error(self) -> None:
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(KeyValueFormatter())
+        handler.addFilter(ContextFilter())
+
+        logger = logging.getLogger("test.logging.provider")
+        logger.handlers = [handler]
+        logger.propagate = False
+        logger.setLevel(logging.INFO)
+
+        try:
+            raise ProviderStreamParseError("stream framing failed")
+        except ProviderStreamParseError as exc:
+            logger.error(
+                "provider_failed",
+                extra={
+                    "error": str(exc),
+                    "error_code": exc.error_code,
+                    "exception_type": type(exc).__name__,
+                    "exception_message": str(exc),
+                },
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+
+        output = stream.getvalue()
+        self.assertIn('event="provider_failed"', output)
+        self.assertIn('error_code="provider_stream_parse_error"', output)
+        self.assertIn('exception_type="ProviderStreamParseError"', output)
+        self.assertIn("Traceback", output)
