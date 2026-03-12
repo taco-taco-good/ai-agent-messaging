@@ -174,9 +174,46 @@ class MemoryWriterTests(unittest.TestCase):
             self.assertIsNotNone(snapshot)
             assert snapshot is not None
             self.assertEqual(snapshot.current_task, "Session resume")
+            self.assertEqual(snapshot.activity_type, "review")
+            self.assertEqual(snapshot.work_status, "in_progress")
+            self.assertEqual(snapshot.current_artifact, "Referenced artifacts: src/services/messaging.py")
+            self.assertEqual(snapshot.latest_conclusion, "Persist a compact resume snapshot.")
+            self.assertEqual(snapshot.evidence_basis, ["code_inspection"])
+            self.assertEqual(snapshot.artifacts, ["src/services/messaging.py"])
             self.assertEqual(snapshot.tags, ["resume"])
             self.assertIn("src/services/messaging.py", snapshot.touched_files)
             self.assertEqual(snapshot.open_questions, ["What should change?"])
+
+    def test_snapshot_store_captures_research_artifacts_without_code_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            workspace_dir = root / "workspace"
+            docs_path = workspace_dir / "docs" / "git.md"
+            docs_path.parent.mkdir(parents=True, exist_ok=True)
+            docs_path.write_text("# Git\n", encoding="utf-8")
+            store = SessionSnapshotStore()
+            agent = type("Agent", (), {"agent_id": "researcher", "workspace_dir": workspace_dir})()
+
+            store.write(
+                agent,
+                "discord:channel:456",
+                user_text="docs/git.md 기준으로 구조 설계를 조사해줘",
+                assistant_text="- 현재 규칙을 정리했습니다.\n- 다음은 snapshot schema 비교입니다.",
+                metadata=FrontmatterMetadata(
+                    tags=["snapshot", "docs"],
+                    topic="Snapshot schema research",
+                    summary="Compare research-friendly resume fields.",
+                ),
+            )
+
+            snapshot = store.read(agent, "discord:channel:456")
+
+            self.assertIsNotNone(snapshot)
+            assert snapshot is not None
+            self.assertEqual(snapshot.activity_type, "design")
+            self.assertEqual(snapshot.current_artifact, "Referenced artifacts: docs/git.md, project docs")
+            self.assertEqual(snapshot.evidence_basis, ["code_inspection", "document_review"])
+            self.assertEqual(snapshot.artifacts, ["docs/git.md", "project docs"])
 
     def test_snapshot_store_separates_agents_with_shared_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -202,6 +239,43 @@ class MemoryWriterTests(unittest.TestCase):
             self.assertNotEqual(reviewer_path, helper_path)
             self.assertIn("/reviewer/", str(reviewer_path))
             self.assertIn("/helper/", str(helper_path))
+
+    def test_snapshot_store_reads_latest_agent_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            workspace_dir = Path(tempdir) / "workspace"
+            workspace_dir.mkdir(parents=True, exist_ok=True)
+            store = SessionSnapshotStore()
+            agent = type("Agent", (), {"agent_id": "reviewer", "workspace_dir": workspace_dir})()
+
+            store.write(
+                agent,
+                "discord:channel:123",
+                user_text="review the bootstrap flow",
+                assistant_text="first response",
+                metadata=FrontmatterMetadata(
+                    tags=["bootstrap"],
+                    topic="Bootstrap review",
+                    summary="Initial review state.",
+                ),
+            )
+            store.write(
+                agent,
+                "discord:channel:456",
+                user_text="continue with runtime refactor",
+                assistant_text="second response",
+                metadata=FrontmatterMetadata(
+                    tags=["runtime"],
+                    topic="Runtime refactor",
+                    summary="Latest review state.",
+                ),
+            )
+
+            snapshot = store.read_latest(agent, exclude_session_key="discord:channel:789")
+
+            self.assertIsNotNone(snapshot)
+            assert snapshot is not None
+            self.assertEqual(snapshot.session_key, "discord:channel:456")
+            self.assertEqual(snapshot.current_task, "Runtime refactor")
 
     def test_snapshot_store_ignores_corrupted_json(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:

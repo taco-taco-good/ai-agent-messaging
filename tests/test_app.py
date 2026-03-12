@@ -133,6 +133,7 @@ class AgentMessagingAppTests(unittest.IsolatedAsyncioTestCase):
         init_doc_text = init_doc.read_text(encoding="utf-8")
         self.assertIn("resources/memory-search/SKILL.md", init_doc_text)
         self.assertIn("resources/memory-search/scripts/search_memory.py", init_doc_text)
+        self.assertIn("At the start of a new session", init_doc_text)
 
         memory_files = sorted((self.root / "memory" / "reviewer").rglob("conversation_*.md"))
         self.assertEqual(len(memory_files), 1)
@@ -187,11 +188,146 @@ class AgentMessagingAppTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(chunks), 1)
         self.assertIn("Resume context for this session.", chunks[0])
         self.assertIn("Current task: Messaging flow review", chunks[0])
+        self.assertIn("Activity type: review", chunks[0])
+        self.assertIn("Work status: in_progress", chunks[0])
+        self.assertIn("Current artifact: Referenced artifacts: src/services/messaging.py", chunks[0])
+        self.assertIn("Latest conclusion: Check how session resume should be assembled.", chunks[0])
+        self.assertIn("Evidence basis: code_inspection", chunks[0])
+        self.assertIn("Last user message: review src/services/messaging.py", chunks[0])
+        self.assertIn(
+            "Last assistant response summary: reply:review src/services/messaging.py:alpha",
+            chunks[0],
+        )
+        self.assertIn("Artifacts:", chunks[0])
+        self.assertIn("- src/services/messaging.py", chunks[0])
         self.assertIn("Touched files:", chunks[0])
         self.assertIn("src/services/messaging.py", chunks[0])
         self.assertIn("Memory", chunks[0])
         self.assertIn("Current user message:\ncontinue", chunks[0])
         await resumed_app.shutdown()
+
+    async def test_new_session_bootstraps_from_latest_agent_snapshot(self) -> None:
+        await self.app.handle_user_message(
+            agent_id="reviewer",
+            channel_id="123",
+            content="review src/services/messaging.py",
+            is_dm=False,
+            metadata=FrontmatterMetadata(
+                tags=["architecture", "messaging"],
+                topic="Messaging flow review",
+                summary="Carry the latest task across sessions.",
+            ),
+        )
+
+        chunks = await self.app.handle_user_message(
+            agent_id="reviewer",
+            channel_id="456",
+            content="continue in a new session",
+            is_dm=False,
+        )
+
+        self.assertEqual(len(chunks), 1)
+        self.assertIn("Resume context from the latest saved agent work state.", chunks[0])
+        self.assertIn("Source session key: discord:channel:123", chunks[0])
+        self.assertIn("Current task: Messaging flow review", chunks[0])
+        self.assertIn("Current user message:\ncontinue in a new session", chunks[0])
+
+    async def test_new_session_does_not_resume_unrelated_request(self) -> None:
+        await self.app.handle_user_message(
+            agent_id="reviewer",
+            channel_id="123",
+            content="review src/services/messaging.py",
+            is_dm=False,
+            metadata=FrontmatterMetadata(
+                tags=["architecture", "messaging"],
+                topic="Messaging flow review",
+                summary="Carry the latest task across sessions only when relevant.",
+            ),
+        )
+
+        chunks = await self.app.handle_user_message(
+            agent_id="reviewer",
+            channel_id="456",
+            content="write release notes for this week",
+            is_dm=False,
+        )
+
+        self.assertEqual(chunks, ["reply:write release notes for this week:alpha"])
+
+    async def test_new_session_bootstraps_from_latest_memory_when_snapshot_missing(self) -> None:
+        await self.app.handle_user_message(
+            agent_id="reviewer",
+            channel_id="123",
+            content="review src/services/messaging.py",
+            is_dm=False,
+            metadata=FrontmatterMetadata(
+                tags=["architecture", "messaging"],
+                topic="Messaging flow review",
+                summary="Recover from recent memory when session snapshots are gone.",
+            ),
+        )
+        snapshots_dir = (
+            self.root
+            / "workspace"
+            / "reviewer"
+            / ".agent-messaging"
+            / "snapshots"
+            / "reviewer"
+        )
+        for path in snapshots_dir.glob("*.json"):
+            path.unlink()
+
+        chunks = await self.app.handle_user_message(
+            agent_id="reviewer",
+            channel_id="789",
+            content="continue after snapshot loss",
+            is_dm=False,
+        )
+
+        self.assertEqual(len(chunks), 1)
+        self.assertIn("Resume context from the latest saved agent memory.", chunks[0])
+        self.assertIn("Current task: Messaging flow review", chunks[0])
+        self.assertIn("Last user message: review src/services/messaging.py", chunks[0])
+        self.assertIn("Latest assistant summary: reply:review", chunks[0])
+        self.assertIn("Current user message:\ncontinue after snapshot loss", chunks[0])
+
+    async def test_new_session_memory_fallback_skips_invalid_utf8_documents(self) -> None:
+        await self.app.handle_user_message(
+            agent_id="reviewer",
+            channel_id="123",
+            content="review src/services/messaging.py",
+            is_dm=False,
+            metadata=FrontmatterMetadata(
+                tags=["architecture", "messaging"],
+                topic="Messaging flow review",
+                summary="Recover from the newest valid memory file.",
+            ),
+        )
+        snapshots_dir = (
+            self.root
+            / "workspace"
+            / "reviewer"
+            / ".agent-messaging"
+            / "snapshots"
+            / "reviewer"
+        )
+        for path in snapshots_dir.glob("*.json"):
+            path.unlink()
+
+        corrupted_path = self.root / "memory" / "reviewer" / "9999-12-31" / "conversation_001.md"
+        corrupted_path.parent.mkdir(parents=True, exist_ok=True)
+        corrupted_path.write_bytes(b"---\ndate: 9999-12-31\n---\nhello\xa1world\n")
+
+        chunks = await self.app.handle_user_message(
+            agent_id="reviewer",
+            channel_id="789",
+            content="continue from the previous review",
+            is_dm=False,
+        )
+
+        self.assertEqual(len(chunks), 1)
+        self.assertIn("Resume context from the latest saved agent memory.", chunks[0])
+        self.assertIn("Current task: Messaging flow review", chunks[0])
 
     async def test_shared_workspace_agents_do_not_share_resume_snapshot(self) -> None:
         helper_memory_dir = self.root / "memory" / "helper"
