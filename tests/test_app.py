@@ -22,12 +22,14 @@ class FakeProvider(CLIWrapper):
     def __init__(self, default_model=None):
         super().__init__(default_model=default_model)
         self._alive = False
+        self._has_history = False
 
     async def start(self) -> None:
         self._alive = True
         self.provider_session_id = "fake-session"
 
     async def send_user_message(self, message: str):
+        self._has_history = True
         yield "reply:{0}:{1}".format(message, self.current_model)
 
     async def send_native_command(self, command: str, args=None):
@@ -60,6 +62,9 @@ class AgentMessagingAppTests(unittest.IsolatedAsyncioTestCase):
         persona_file = root / "config" / "personas" / "reviewer.md"
         persona_file.parent.mkdir(parents=True, exist_ok=True)
         persona_file.write_text("Review code changes and call out correctness issues first.\n", encoding="utf-8")
+        source_file = workspace_dir / "src" / "services" / "messaging.py"
+        source_file.parent.mkdir(parents=True, exist_ok=True)
+        source_file.write_text("pass\n", encoding="utf-8")
 
         agent = AgentConfig(
             agent_id="reviewer",
@@ -134,6 +139,131 @@ class AgentMessagingAppTests(unittest.IsolatedAsyncioTestCase):
         document = memory_files[0].read_text(encoding="utf-8")
         self.assertIn("Greeting", document)
         self.assertIn("reply:hello:alpha", document)
+        snapshot_path = (
+            self.root
+            / "workspace"
+            / "reviewer"
+            / ".agent-messaging"
+            / "snapshots"
+            / "reviewer"
+            / "discord_channel_123.json"
+        )
+        self.assertTrue(snapshot_path.exists())
+        snapshot_payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        self.assertEqual(snapshot_payload["current_task"], "Greeting")
+        self.assertEqual(snapshot_payload["next_step"], "reply:hello:alpha")
+
+    async def test_new_app_bootstraps_with_saved_snapshot(self) -> None:
+        await self.app.handle_user_message(
+            agent_id="reviewer",
+            channel_id="123",
+            content="review src/services/messaging.py",
+            is_dm=False,
+            metadata=FrontmatterMetadata(
+                tags=["architecture", "messaging"],
+                topic="Messaging flow review",
+                summary="Check how session resume should be assembled.",
+            ),
+        )
+        await self.app.shutdown()
+
+        registry = AgentRegistry({"reviewer": self.app.registry.get("reviewer")})
+        session_manager = SessionManager(SessionStore(self.root / "runtime" / "sessions.json"))
+        resumed_app = AgentMessagingApp(
+            registry=registry,
+            session_manager=session_manager,
+            provider_factory=lambda config, session_key, session_record=None: FakeProvider(
+                default_model=(session_record.current_model if session_record else None)
+                or config.model
+            ),
+        )
+        chunks = await resumed_app.handle_user_message(
+            agent_id="reviewer",
+            channel_id="123",
+            content="continue",
+            is_dm=False,
+        )
+
+        self.assertEqual(len(chunks), 1)
+        self.assertIn("Resume context for this session.", chunks[0])
+        self.assertIn("Current task: Messaging flow review", chunks[0])
+        self.assertIn("Touched files:", chunks[0])
+        self.assertIn("src/services/messaging.py", chunks[0])
+        self.assertIn("Memory", chunks[0])
+        self.assertIn("Current user message:\ncontinue", chunks[0])
+        await resumed_app.shutdown()
+
+    async def test_shared_workspace_agents_do_not_share_resume_snapshot(self) -> None:
+        helper_memory_dir = self.root / "memory" / "helper"
+        helper_agent = AgentConfig(
+            agent_id="helper",
+            display_name="Helper",
+            provider="codex",
+            discord_token="token",
+            workspace_dir=self.root / "workspace" / "reviewer",
+            memory_dir=helper_memory_dir,
+            model="alpha",
+            persona="Summarize and assist.",
+            persona_file=self.root / "config" / "personas" / "reviewer.md",
+        )
+        registry = AgentRegistry(
+            {
+                "reviewer": self.app.registry.get("reviewer"),
+                "helper": helper_agent,
+            }
+        )
+        session_manager = SessionManager(SessionStore(self.root / "runtime" / "sessions.json"))
+        multi_app = AgentMessagingApp(
+            registry=registry,
+            session_manager=session_manager,
+            provider_factory=lambda config, session_key, session_record=None: FakeProvider(
+                default_model=(session_record.current_model if session_record else None)
+                or config.model
+            ),
+        )
+        await multi_app.handle_user_message(
+            agent_id="reviewer",
+            channel_id="shared",
+            content="review src/services/messaging.py",
+            is_dm=False,
+            metadata=FrontmatterMetadata(
+                tags=["review"],
+                topic="Reviewer-only task",
+                summary="Persist reviewer context only.",
+            ),
+        )
+
+        chunks = await multi_app.handle_user_message(
+            agent_id="helper",
+            channel_id="shared",
+            content="continue",
+            is_dm=False,
+        )
+
+        self.assertEqual(chunks, ["reply:continue:alpha"])
+        await multi_app.shutdown()
+
+    async def test_corrupted_snapshot_is_ignored_during_bootstrap(self) -> None:
+        snapshot_path = (
+            self.root
+            / "workspace"
+            / "reviewer"
+            / ".agent-messaging"
+            / "snapshots"
+            / "reviewer"
+            / "discord_channel_123.json"
+        )
+        snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+        snapshot_path.write_text("{invalid json", encoding="utf-8")
+
+        chunks = await self.app.handle_user_message(
+            agent_id="reviewer",
+            channel_id="123",
+            content="continue",
+            is_dm=False,
+        )
+
+        self.assertEqual(chunks, ["reply:continue:alpha"])
 
     async def test_model_command_updates_session(self) -> None:
         await self.app.handle_user_message(

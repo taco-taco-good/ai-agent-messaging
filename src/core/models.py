@@ -104,6 +104,55 @@ class MemorySearchResult:
     score: float
 
 
+@dataclass
+class SessionSnapshot:
+    session_key: str
+    updated_at: datetime
+    current_task: str = ""
+    topic: str = ""
+    summary: str = ""
+    tags: List[str] = field(default_factory=list)
+    recent_decisions: List[str] = field(default_factory=list)
+    open_questions: List[str] = field(default_factory=list)
+    next_step: str = ""
+    touched_files: List[str] = field(default_factory=list)
+    last_user_message: str = ""
+    last_assistant_summary: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "session_key": self.session_key,
+            "updated_at": self.updated_at.isoformat(),
+            "current_task": self.current_task,
+            "topic": self.topic,
+            "summary": self.summary,
+            "tags": list(self.tags),
+            "recent_decisions": list(self.recent_decisions),
+            "open_questions": list(self.open_questions),
+            "next_step": self.next_step,
+            "touched_files": list(self.touched_files),
+            "last_user_message": self.last_user_message,
+            "last_assistant_summary": self.last_assistant_summary,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Dict[str, Any]) -> "SessionSnapshot":
+        return cls(
+            session_key=str(payload["session_key"]),
+            updated_at=datetime.fromisoformat(payload["updated_at"]),
+            current_task=str(payload.get("current_task", "")),
+            topic=str(payload.get("topic", "")),
+            summary=str(payload.get("summary", "")),
+            tags=[str(tag) for tag in payload.get("tags", [])],
+            recent_decisions=[str(item) for item in payload.get("recent_decisions", [])],
+            open_questions=[str(item) for item in payload.get("open_questions", [])],
+            next_step=str(payload.get("next_step", "")),
+            touched_files=[str(item) for item in payload.get("touched_files", [])],
+            last_user_message=str(payload.get("last_user_message", "")),
+            last_assistant_summary=str(payload.get("last_assistant_summary", "")),
+        )
+
+
 @dataclass(frozen=True)
 class RoutedCLICommand:
     command: str

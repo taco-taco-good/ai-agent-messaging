@@ -30,6 +30,24 @@ class MemoryWriterProtocol(Protocol):
     ) -> Any: ...
 
 
+class SessionSnapshotStoreProtocol(Protocol):
+    def write(
+        self,
+        agent: Any,
+        session_key: str,
+        *,
+        user_text: str,
+        assistant_text: str,
+        metadata: Any = None,
+    ) -> Any: ...
+
+    def read(self, agent: Any, session_key: str) -> Any: ...
+
+
+class ResumeContextAssemblerProtocol(Protocol):
+    def assemble(self, agent: Any, session_key: str) -> str: ...
+
+
 class ToolRuntimeProtocol(Protocol):
     def register(self, name: str, handler: Any) -> None: ...
 

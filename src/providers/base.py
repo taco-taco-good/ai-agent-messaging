@@ -118,6 +118,9 @@ class CLIWrapper(ABC):
     def supports_native_command(self, command: str) -> bool:
         return command in set(self.supported_commands)
 
+    def has_history(self) -> bool:
+        return bool(getattr(self, "_has_history", bool(self.provider_session_id)))
+
     def session_scope_key(
         self,
         channel_id: str,
