@@ -9,9 +9,13 @@ from agent_messaging.core.interfaces import (
     MetadataGeneratorProtocol,
     MemoryWriterProtocol,
     ProviderRuntimeProtocol,
+    ResumeContextAssemblerProtocol,
     SessionManagerProtocol,
+    SessionSnapshotStoreProtocol,
 )
 from agent_messaging.core.models import FrontmatterMetadata
+from agent_messaging.memory.resume_context import ResumeContextAssembler
+from agent_messaging.memory.snapshot import SessionSnapshotStore
 from agent_messaging.memory.metadata import MetadataGenerator
 from agent_messaging.memory.writer import MemoryWriter
 from agent_messaging.observability.context import log_context
@@ -31,6 +35,8 @@ class ConversationService:
         provider_runtime: ProviderRuntimeProtocol,
         memory_writer: Optional[MemoryWriterProtocol] = None,
         metadata_generator: Optional[MetadataGeneratorProtocol] = None,
+        snapshot_store: Optional[SessionSnapshotStoreProtocol] = None,
+        resume_context_assembler: Optional[ResumeContextAssemblerProtocol] = None,
         chunk_limit: int = 2000,
     ) -> None:
         self.registry = registry
@@ -38,6 +44,10 @@ class ConversationService:
         self.provider_runtime = provider_runtime
         self.memory_writer = memory_writer or MemoryWriter()
         self.metadata_generator = metadata_generator or MetadataGenerator()
+        self.snapshot_store = snapshot_store or SessionSnapshotStore()
+        self.resume_context_assembler = resume_context_assembler or ResumeContextAssembler(
+            snapshot_store=self.snapshot_store
+        )
         self.chunk_limit = chunk_limit
 
     async def handle_user_message(
@@ -75,9 +85,20 @@ class ConversationService:
             provider_session_id=wrapper.provider_session_id or "-",
         ):
             async with lock:
+                message_to_send = content
+                if not wrapper.has_history():
+                    resume_context = await asyncio.to_thread(
+                        self.resume_context_assembler.assemble,
+                        agent,
+                        session_key,
+                    )
+                    if resume_context:
+                        message_to_send = (
+                            "{0}\n\nCurrent user message:\n{1}".format(resume_context, content)
+                        )
                 response, wrapper = await collect_with_timeout_recovery(
                     wrapper=wrapper,
-                    stream_factory=lambda current: current.send_user_message(content),
+                    stream_factory=lambda current: current.send_user_message(message_to_send),
                     progress_callback=progress_callback,
                     response_callback=response_callback,
                     reset_session=lambda: reset_session_for_retry(
@@ -121,6 +142,14 @@ class ConversationService:
                 role="assistant",
                 content=response,
                 participants=participants,
+                metadata=generated_metadata,
+            )
+            await asyncio.to_thread(
+                self.snapshot_store.write,
+                agent,
+                session_key,
+                user_text=content,
+                assistant_text=response,
                 metadata=generated_metadata,
             )
             await self.session_manager.upsert(
