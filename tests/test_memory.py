@@ -203,6 +203,43 @@ class MemoryWriterTests(unittest.TestCase):
             self.assertIn("/reviewer/", str(reviewer_path))
             self.assertIn("/helper/", str(helper_path))
 
+    def test_snapshot_store_reads_latest_agent_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            workspace_dir = Path(tempdir) / "workspace"
+            workspace_dir.mkdir(parents=True, exist_ok=True)
+            store = SessionSnapshotStore()
+            agent = type("Agent", (), {"agent_id": "reviewer", "workspace_dir": workspace_dir})()
+
+            store.write(
+                agent,
+                "discord:channel:123",
+                user_text="review the bootstrap flow",
+                assistant_text="first response",
+                metadata=FrontmatterMetadata(
+                    tags=["bootstrap"],
+                    topic="Bootstrap review",
+                    summary="Initial review state.",
+                ),
+            )
+            store.write(
+                agent,
+                "discord:channel:456",
+                user_text="continue with runtime refactor",
+                assistant_text="second response",
+                metadata=FrontmatterMetadata(
+                    tags=["runtime"],
+                    topic="Runtime refactor",
+                    summary="Latest review state.",
+                ),
+            )
+
+            snapshot = store.read_latest(agent, exclude_session_key="discord:channel:789")
+
+            self.assertIsNotNone(snapshot)
+            assert snapshot is not None
+            self.assertEqual(snapshot.session_key, "discord:channel:456")
+            self.assertEqual(snapshot.current_task, "Runtime refactor")
+
     def test_snapshot_store_ignores_corrupted_json(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             workspace_dir = Path(tempdir) / "workspace"

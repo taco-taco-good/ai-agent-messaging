@@ -56,7 +56,8 @@ def _render_init_doc(agent: AgentConfig) -> str:
         "## Tools\n"
         "- Memory search skill: `{4}`\n"
         "- Memory search script: `{5}`\n"
-        "- When the user asks about prior conversations, forgotten terms, or memory lookup, open the memory search skill and use its script against `{3}`.\n"
+        "- At the start of a new session, check the latest relevant memory for this agent and continue prior work when applicable.\n"
+        "- If startup context is missing or the user asks about prior conversations, forgotten terms, or memory lookup, open the memory search skill and use its script against `{3}`.\n"
         "- Example: `python3 {5} --memory-dir {3} --query \"architecture\" --top-k 5`\n"
         "- Use provider-native commands such as `/help`, `/stats`, and `/model` when needed.\n"
     ).format(

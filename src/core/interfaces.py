@@ -45,7 +45,7 @@ class SessionSnapshotStoreProtocol(Protocol):
 
 
 class ResumeContextAssemblerProtocol(Protocol):
-    def assemble(self, agent: Any, session_key: str) -> str: ...
+    def assemble(self, agent: Any, session_key: str, user_text: str) -> str: ...
 
 
 class ToolRuntimeProtocol(Protocol):

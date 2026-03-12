@@ -91,6 +91,7 @@ class ConversationService:
                         self.resume_context_assembler.assemble,
                         agent,
                         session_key,
+                        content,
                     )
                     if resume_context:
                         message_to_send = (

@@ -5,6 +5,7 @@ import json
 from json import JSONDecodeError
 import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -42,8 +43,16 @@ class SessionSnapshotStore:
         )
         path = self._path_for(agent, session_key)
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = path.with_suffix(path.suffix + ".tmp")
-        tmp_path.write_text(json.dumps(snapshot.to_dict(), ensure_ascii=True, indent=2), encoding="utf-8")
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=path.stem + ".",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp_file:
+            tmp_file.write(json.dumps(snapshot.to_dict(), ensure_ascii=True, indent=2))
+            tmp_path = Path(tmp_file.name)
         os.replace(tmp_path, path)
         return path
 
@@ -51,6 +60,36 @@ class SessionSnapshotStore:
         path = self._path_for(agent, session_key)
         if not path.exists():
             return None
+        return self._read_path(path, agent=agent, session_key=session_key)
+
+    def read_latest(
+        self,
+        agent: AgentConfig,
+        *,
+        exclude_session_key: str | None = None,
+    ) -> SessionSnapshot | None:
+        snapshots_dir = agent.workspace_dir / ".agent-messaging" / "snapshots" / self._safe_agent_id(agent)
+        if not snapshots_dir.exists():
+            return None
+
+        latest: SessionSnapshot | None = None
+        for path in sorted(snapshots_dir.glob("*.json")):
+            snapshot = self._read_path(path, agent=agent, session_key=path.stem)
+            if snapshot is None:
+                continue
+            if exclude_session_key is not None and snapshot.session_key == exclude_session_key:
+                continue
+            if latest is None or snapshot.updated_at > latest.updated_at:
+                latest = snapshot
+        return latest
+
+    def _read_path(
+        self,
+        path: Path,
+        *,
+        agent: AgentConfig,
+        session_key: str,
+    ) -> SessionSnapshot | None:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
             return SessionSnapshot.from_dict(payload)
@@ -67,7 +106,7 @@ class SessionSnapshotStore:
             return None
 
     def _path_for(self, agent: AgentConfig, session_key: str) -> Path:
-        safe_agent = _SESSION_KEY_SAFE.sub("_", agent.agent_id).strip("_") or "agent"
+        safe_agent = self._safe_agent_id(agent)
         safe_key = _SESSION_KEY_SAFE.sub("_", session_key).strip("_") or "default"
         return (
             agent.workspace_dir
@@ -76,6 +115,9 @@ class SessionSnapshotStore:
             / safe_agent
             / "{0}.json".format(safe_key)
         )
+
+    def _safe_agent_id(self, agent: AgentConfig) -> str:
+        return _SESSION_KEY_SAFE.sub("_", agent.agent_id).strip("_") or "agent"
 
 
 def _current_task(*, user_text: str, metadata: Optional[FrontmatterMetadata]) -> str:
