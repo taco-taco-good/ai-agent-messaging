@@ -238,13 +238,13 @@ class ClaudeWrapper(SubprocessCLIWrapper):
                         deltas.append(text)
                         yield text
 
+        final_text = "".join(deltas) or self._extract_streaming_final_text(lines)
         stderr = await process.stderr.read() if process.stderr is not None else b""
         returncode = await process.wait()
         stderr_text = stderr.decode("utf-8", errors="replace").strip()
         if returncode != 0:
-            raise ProviderError(stderr_text or "Claude print command failed.")
+            raise ProviderError(stderr_text or final_text or "Claude print command failed.")
 
-        final_text = "".join(deltas) or self._extract_streaming_final_text(lines)
         self._has_history = True
         await self._after_one_shot_success(
             raw_output="\n".join(lines),
