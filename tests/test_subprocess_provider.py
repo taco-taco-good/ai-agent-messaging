@@ -129,7 +129,7 @@ class SubprocessProviderTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Exact model: claude-sonnet-4-6", chunks[0])
             self.assertIn("Source: claude session log", chunks[0])
 
-    async def test_claude_wrapper_emits_progress_before_hard_timeout(self) -> None:
+    async def test_claude_wrapper_does_not_emit_progress_before_hard_timeout(self) -> None:
         fixture = Path(__file__).parent / "fixtures" / "fake_cli.py"
         with tempfile.TemporaryDirectory() as tempdir:
             wrapper = ClaudeWrapper(
@@ -152,7 +152,7 @@ class SubprocessProviderTests(unittest.IsolatedAsyncioTestCase):
                 chunks.append(chunk)
 
             self.assertEqual(chunks, ["reply:__sleep__:sonnet"])
-            self.assertEqual(progress, ["응답 생성에 시간이 걸리고 있습니다. 계속 처리 중입니다."])
+            self.assertEqual(progress, [])
 
     async def test_claude_wrapper_streams_multiple_text_deltas_in_order(self) -> None:
         fixture = Path(__file__).parent / "fixtures" / "fake_cli.py"
@@ -169,6 +169,22 @@ class SubprocessProviderTests(unittest.IsolatedAsyncioTestCase):
                 chunks.append(chunk)
 
             self.assertEqual(chunks, ["reply:__s", "plit:sonnet"])
+
+    async def test_claude_wrapper_handles_stream_json_lines_over_reader_limit(self) -> None:
+        fixture = Path(__file__).parent / "fixtures" / "fake_cli.py"
+        with tempfile.TemporaryDirectory() as tempdir:
+            wrapper = ClaudeWrapper(
+                executable=sys.executable,
+                base_args=[str(fixture)],
+                default_model="sonnet",
+                workspace_dir=Path(tempdir),
+            )
+
+            chunks = []
+            async for chunk in wrapper.send_user_message("__longline__"):
+                chunks.append(chunk)
+
+            self.assertEqual(chunks, ["x" * 70000])
 
     async def test_gemini_wrapper_stats_reads_exact_model_from_chat_log(self) -> None:
         fixture = Path(__file__).parent / "fixtures" / "fake_cli.py"

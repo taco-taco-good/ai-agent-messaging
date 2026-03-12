@@ -48,6 +48,8 @@ if "-p" in args:
     stream_chunks = [response]
     if prompt == "__split__":
         stream_chunks = ["reply:__s", "plit:{0}".format(current_model)]
+    if prompt == "__longline__":
+        stream_chunks = ["x" * 70000]
     if "--output-format" in args and args[args.index("--output-format") + 1] == "stream-json":
         print(json.dumps({"type": "system", "subtype": "init"}), flush=True)
         for chunk in stream_chunks:

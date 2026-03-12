@@ -445,6 +445,9 @@ _CHUNK_SEND_DELAY = 0.3  # seconds between consecutive chunk sends
 _DISCORD_SELECT_TEXT_LIMIT = 100
 _STREAM_EDIT_LIMIT = 1900
 _STREAM_FLUSH_CHARS = 200
+_STREAM_FORCE_FLUSH_CHARS = 600
+_SENTENCE_ENDINGS = (".", "!", "?", "。", "！", "？")
+_BOUNDARY_TRAILING = "\"')]} \t\r\n"
 
 
 def _truncate_select_text(text: str) -> str:
@@ -489,10 +492,8 @@ class _ChannelStreamResponder:
         async with self._lock:
             if self.provider == "claude":
                 self._text += piece
-                should_flush = (
-                    len(self._text) - self._rendered_length >= _STREAM_FLUSH_CHARS
-                    or "\n" in piece
-                )
+                pending = self._text[self._rendered_length :]
+                should_flush = _should_flush_stream_text(pending)
                 if not should_flush:
                     return
                 await self._sync_messages()
@@ -551,6 +552,22 @@ class _ChannelStreamResponder:
                     )
                     raise
                 self._messages.append(message)
+
+
+def _should_flush_stream_text(pending: str) -> bool:
+    pending_length = len(pending)
+    if pending_length >= _STREAM_FORCE_FLUSH_CHARS:
+        return True
+    if "\n" in pending and pending_length >= _STREAM_FLUSH_CHARS:
+        return True
+    if pending_length < _STREAM_FLUSH_CHARS:
+        return False
+    return _ends_with_sentence_boundary(pending)
+
+
+def _ends_with_sentence_boundary(text: str) -> bool:
+    stripped = text.rstrip(_BOUNDARY_TRAILING)
+    return stripped.endswith(_SENTENCE_ENDINGS)
 
 
 async def _send_interaction_chunks(interaction: Any, chunks: List[str]) -> None:
