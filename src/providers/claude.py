@@ -172,13 +172,13 @@ class ClaudeWrapper(SubprocessCLIWrapper):
         deltas: list[str] = []
         started = asyncio.get_running_loop().time()
         warned = False
+        pending = b""
 
         while True:
             elapsed = asyncio.get_running_loop().time() - started
             if not warned and elapsed >= self.warning_timeout:
                 warned = True
                 self._timeout_warning_issued = True
-                await self.emit_progress("응답 생성에 시간이 걸리고 있습니다. 계속 처리 중입니다.")
             remaining = self.hard_timeout - elapsed
             if remaining <= 0:
                 process.kill()
@@ -187,21 +187,46 @@ class ClaudeWrapper(SubprocessCLIWrapper):
                     "Provider did not respond within {0} seconds.".format(self.hard_timeout)
                 )
             try:
-                line = await asyncio.wait_for(process.stdout.readline(), timeout=min(1.0, remaining))
+                chunk = await asyncio.wait_for(process.stdout.read(4096), timeout=min(1.0, remaining))
             except asyncio.TimeoutError:
                 continue
-            if not line:
+            if not chunk:
                 break
-            raw_line = line.decode("utf-8", errors="replace").strip()
-            if not raw_line:
-                continue
-            lines.append(raw_line)
+            pending += chunk
+            while True:
+                newline_index = pending.find(b"\n")
+                if newline_index < 0:
+                    break
+                raw_line = pending[:newline_index].decode("utf-8", errors="replace").strip()
+                pending = pending[newline_index + 1 :]
+                if not raw_line:
+                    continue
+                lines.append(raw_line)
+                try:
+                    payload = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    continue
+                event_type = payload.get("type")
+                if event_type == "stream_event":
+                    event = payload.get("event") or {}
+                    if (
+                        isinstance(event, dict)
+                        and event.get("type") == "content_block_delta"
+                        and isinstance(event.get("delta"), dict)
+                    ):
+                        text = event["delta"].get("text")
+                        if isinstance(text, str) and text:
+                            deltas.append(text)
+                            yield text
+
+        trailing_line = pending.decode("utf-8", errors="replace").strip()
+        if trailing_line:
+            lines.append(trailing_line)
             try:
-                payload = json.loads(raw_line)
+                payload = json.loads(trailing_line)
             except json.JSONDecodeError:
-                continue
-            event_type = payload.get("type")
-            if event_type == "stream_event":
+                payload = None
+            if isinstance(payload, dict) and payload.get("type") == "stream_event":
                 event = payload.get("event") or {}
                 if (
                     isinstance(event, dict)
