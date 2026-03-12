@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from agent_messaging.providers.claude import ClaudeWrapper
-from agent_messaging.providers.base import ProviderStartupError
+from agent_messaging.providers.base import ProviderError, ProviderStartupError
 from agent_messaging.providers.gemini import GeminiWrapper
 
 
@@ -185,6 +185,22 @@ class SubprocessProviderTests(unittest.IsolatedAsyncioTestCase):
                 chunks.append(chunk)
 
             self.assertEqual(chunks, ["x" * 70000])
+
+    async def test_claude_wrapper_surfaces_stream_json_error_result_text(self) -> None:
+        fixture = Path(__file__).parent / "fixtures" / "fake_cli.py"
+        with tempfile.TemporaryDirectory() as tempdir:
+            wrapper = ClaudeWrapper(
+                executable=sys.executable,
+                base_args=[str(fixture)],
+                default_model="sonnet",
+                workspace_dir=Path(tempdir),
+            )
+
+            with self.assertRaises(ProviderError) as context:
+                async for _ in wrapper.send_user_message("__error_result__"):
+                    pass
+
+            self.assertEqual(str(context.exception), "synthetic stream failure")
 
     async def test_gemini_wrapper_stats_reads_exact_model_from_chat_log(self) -> None:
         fixture = Path(__file__).parent / "fixtures" / "fake_cli.py"

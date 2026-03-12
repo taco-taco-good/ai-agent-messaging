@@ -50,6 +50,9 @@ if "-p" in args:
         stream_chunks = ["reply:__s", "plit:{0}".format(current_model)]
     if prompt == "__longline__":
         stream_chunks = ["x" * 70000]
+    if prompt == "__error_result__":
+        response = "synthetic stream failure"
+        stream_chunks = []
     if "--output-format" in args and args[args.index("--output-format") + 1] == "stream-json":
         print(json.dumps({"type": "system", "subtype": "init"}), flush=True)
         for chunk in stream_chunks:
@@ -65,7 +68,10 @@ if "-p" in args:
                 ),
                 flush=True,
             )
-        print(json.dumps({"type": "result", "subtype": "success", "result": response}), flush=True)
+        result_payload = {"type": "result", "subtype": "success", "result": response}
+        if prompt == "__error_result__":
+            result_payload["is_error"] = True
+        print(json.dumps(result_payload), flush=True)
     elif "--output-format" in args and args[args.index("--output-format") + 1] == "json":
         print(
             json.dumps({"session_id": session_id or resume_id or "fake-session", "response": response}),
@@ -73,7 +79,7 @@ if "-p" in args:
         )
     else:
         print(response, flush=True)
-    raise SystemExit(0)
+    raise SystemExit(1 if prompt == "__error_result__" else 0)
 
 for line in sys.stdin:
     payload = line.strip()
