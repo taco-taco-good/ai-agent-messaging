@@ -19,6 +19,7 @@
 - 멀티 프로바이더: `claude`, `codex`, `gemini`를 같은 인터페이스로 래핑
 - 채널별 세션 유지: Discord DM/채널 단위로 대화 세션 관리
 - 영구 메모리: 날짜별 markdown 파일에 대화와 메타데이터 저장
+- 작업 재개 컨텍스트: 세션 snapshot과 최신 memory를 이용해 관련 작업만 안전하게 이어받기
 - 에이전트 페르소나: agent별 persona markdown 파일 지원
 - job scheduler: YAML job 문서와 SQLite 상태 저장 기반의 주기 작업 실행
 - job runtime: 제한된 step type과 tool 목록으로 백그라운드 job 실행
@@ -249,6 +250,34 @@ memory/
 - `summary`
 
 메타데이터는 현재 추가 모델 호출 없이 로컬 규칙 기반으로 생성됩니다.
+
+### Resume Context / Snapshot
+
+대화 처리와 별도로 각 세션의 최근 작업 상태를 workspace 아래 snapshot JSON으로 저장합니다.
+
+```text
+workspace/
+  codex/
+    .agent-messaging/
+      snapshots/
+        codex/
+          discord_dm_123456.json
+```
+
+snapshot에는 다음과 같은 복원용 정보가 들어갑니다.
+
+- `current_task`, `topic`, `summary`
+- `activity_type`, `work_status`
+- `current_artifact`, `latest_conclusion`, `next_step`
+- `evidence_basis`, `artifacts`, `touched_files`
+- `last_user_message`, `last_assistant_summary`
+
+복원 규칙은 다음과 같습니다.
+
+- 같은 Discord 세션 키에서는 해당 snapshot을 우선 사용합니다.
+- 새 세션에서는 사용자의 현재 요청이 이전 작업과 실제로 이어지는 경우에만 최신 agent snapshot을 주입합니다.
+- snapshot이 없거나 읽을 수 없으면 최신 유효 memory 문서를 찾아 task/summary/마지막 메시지 기준으로 복구를 시도합니다.
+- 관련성이 낮은 새 요청에는 이전 작업 문맥을 주입하지 않습니다.
 
 ## Job / Skill / Tool 시스템
 
