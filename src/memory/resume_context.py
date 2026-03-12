@@ -36,6 +36,9 @@ _STOPWORDS = {
     "please",
     "help",
     "need",
+    "write",
+    "start",
+    "fresh",
 }
 _CONTINUE_MARKERS = (
     "continue",
@@ -102,6 +105,22 @@ class ResumeContextAssembler:
             lines.append("Current task: {0}".format(snapshot.current_task))
         if snapshot.summary:
             lines.append("Summary: {0}".format(snapshot.summary))
+        if snapshot.activity_type:
+            lines.append("Activity type: {0}".format(snapshot.activity_type))
+        if snapshot.work_status:
+            lines.append("Work status: {0}".format(snapshot.work_status))
+        if snapshot.current_artifact:
+            lines.append("Current artifact: {0}".format(snapshot.current_artifact))
+        if snapshot.latest_conclusion:
+            lines.append("Latest conclusion: {0}".format(snapshot.latest_conclusion))
+        if snapshot.evidence_basis:
+            lines.append("Evidence basis: {0}".format(", ".join(snapshot.evidence_basis)))
+        if snapshot.last_user_message:
+            lines.append("Last user message: {0}".format(snapshot.last_user_message))
+        if snapshot.last_assistant_summary:
+            lines.append(
+                "Last assistant response summary: {0}".format(snapshot.last_assistant_summary)
+            )
         if snapshot.recent_decisions:
             lines.append("Recent decisions:")
             lines.extend("- {0}".format(item) for item in snapshot.recent_decisions)
@@ -110,6 +129,9 @@ class ResumeContextAssembler:
             lines.extend("- {0}".format(item) for item in snapshot.open_questions)
         if snapshot.next_step:
             lines.append("Next step: {0}".format(snapshot.next_step))
+        if snapshot.artifacts:
+            lines.append("Artifacts:")
+            lines.extend("- {0}".format(item) for item in snapshot.artifacts)
         if snapshot.touched_files:
             lines.append("Touched files:")
             lines.extend("- {0}".format(path) for path in snapshot.touched_files)
@@ -134,8 +156,8 @@ class ResumeContextAssembler:
         latest_memory = self._latest_memory_record(agent.memory_dir)
         if latest_memory is None:
             return ""
-        metadata, assistant_summary = latest_memory
-        if not self._should_resume_from_memory(user_text, metadata, assistant_summary):
+        metadata, last_user_message, assistant_summary = latest_memory
+        if not self._should_resume_from_memory(user_text, metadata, last_user_message, assistant_summary):
             return ""
         topic = str(metadata.get("topic", "")).strip()
         summary = str(metadata.get("summary", "")).strip()
@@ -154,6 +176,8 @@ class ResumeContextAssembler:
             lines.append("Summary: {0}".format(summary))
         if tags:
             lines.append("Tags: {0}".format(", ".join(tags[:5])))
+        if last_user_message:
+            lines.append("Last user message: {0}".format(last_user_message))
         if assistant_summary:
             lines.append("Latest assistant summary: {0}".format(assistant_summary))
         return "\n".join(lines).strip()
@@ -177,7 +201,7 @@ class ResumeContextAssembler:
             )
         )
 
-    def _latest_memory_record(self, memory_dir: Path) -> tuple[dict, str] | None:
+    def _latest_memory_record(self, memory_dir: Path) -> tuple[dict, str, str] | None:
         candidates = sorted(
             (
                 path
@@ -191,25 +215,26 @@ class ResumeContextAssembler:
                 metadata, body = split_frontmatter(path.read_text(encoding="utf-8"))
             except (OSError, UnicodeDecodeError):
                 continue
-            assistant_summary = self._last_assistant_entry(body)
-            if metadata or assistant_summary:
-                return metadata, assistant_summary
+            last_user_message = self._last_role_entry(body, "user")
+            assistant_summary = self._last_role_entry(body, "assistant")
+            if metadata or last_user_message or assistant_summary:
+                return metadata, last_user_message, assistant_summary
         return None
 
-    def _last_assistant_entry(self, body: str) -> str:
+    def _last_role_entry(self, body: str, role: str) -> str:
         sections = []
         current_role = ""
         current_lines: list[str] = []
         for line in body.splitlines():
             if line.startswith("## "):
-                if current_role == "assistant" and current_lines:
+                if current_role == role and current_lines:
                     sections.append(" ".join(part.strip() for part in current_lines if part.strip()))
                 current_lines = []
-                current_role = "assistant" if line.strip().endswith(" assistant") else ""
+                current_role = role if line.strip().endswith(" {0}".format(role)) else ""
                 continue
-            if current_role == "assistant":
+            if current_role == role:
                 current_lines.append(line)
-        if current_role == "assistant" and current_lines:
+        if current_role == role and current_lines:
             sections.append(" ".join(part.strip() for part in current_lines if part.strip()))
         if not sections:
             return ""
@@ -223,11 +248,14 @@ class ResumeContextAssembler:
             snapshot.current_task,
             snapshot.topic,
             snapshot.summary,
+            snapshot.current_artifact,
+            snapshot.latest_conclusion,
             snapshot.next_step,
             snapshot.last_user_message,
             snapshot.last_assistant_summary,
             " ".join(snapshot.tags),
             " ".join(snapshot.touched_files),
+            " ".join(snapshot.artifacts),
         ]
         return self._should_resume(user_text, context_parts)
 
@@ -235,12 +263,14 @@ class ResumeContextAssembler:
         self,
         user_text: str,
         metadata: dict,
+        last_user_message: str,
         assistant_summary: str,
     ) -> bool:
         context_parts = [
             str(metadata.get("topic", "")),
             str(metadata.get("summary", "")),
             " ".join(str(tag) for tag in metadata.get("tags", [])),
+            last_user_message,
             assistant_summary,
         ]
         return self._should_resume(user_text, context_parts)

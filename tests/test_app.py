@@ -188,6 +188,18 @@ class AgentMessagingAppTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(chunks), 1)
         self.assertIn("Resume context for this session.", chunks[0])
         self.assertIn("Current task: Messaging flow review", chunks[0])
+        self.assertIn("Activity type: review", chunks[0])
+        self.assertIn("Work status: in_progress", chunks[0])
+        self.assertIn("Current artifact: Referenced artifacts: src/services/messaging.py", chunks[0])
+        self.assertIn("Latest conclusion: Check how session resume should be assembled.", chunks[0])
+        self.assertIn("Evidence basis: code_inspection", chunks[0])
+        self.assertIn("Last user message: review src/services/messaging.py", chunks[0])
+        self.assertIn(
+            "Last assistant response summary: reply:review src/services/messaging.py:alpha",
+            chunks[0],
+        )
+        self.assertIn("Artifacts:", chunks[0])
+        self.assertIn("- src/services/messaging.py", chunks[0])
         self.assertIn("Touched files:", chunks[0])
         self.assertIn("src/services/messaging.py", chunks[0])
         self.assertIn("Memory", chunks[0])
@@ -275,6 +287,7 @@ class AgentMessagingAppTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(chunks), 1)
         self.assertIn("Resume context from the latest saved agent memory.", chunks[0])
         self.assertIn("Current task: Messaging flow review", chunks[0])
+        self.assertIn("Last user message: review src/services/messaging.py", chunks[0])
         self.assertIn("Latest assistant summary: reply:review", chunks[0])
         self.assertIn("Current user message:\ncontinue after snapshot loss", chunks[0])
 

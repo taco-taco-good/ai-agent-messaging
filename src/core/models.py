@@ -111,6 +111,12 @@ class SessionSnapshot:
     current_task: str = ""
     topic: str = ""
     summary: str = ""
+    activity_type: str = ""
+    work_status: str = ""
+    current_artifact: str = ""
+    latest_conclusion: str = ""
+    evidence_basis: List[str] = field(default_factory=list)
+    artifacts: List[str] = field(default_factory=list)
     tags: List[str] = field(default_factory=list)
     recent_decisions: List[str] = field(default_factory=list)
     open_questions: List[str] = field(default_factory=list)
@@ -126,6 +132,12 @@ class SessionSnapshot:
             "current_task": self.current_task,
             "topic": self.topic,
             "summary": self.summary,
+            "activity_type": self.activity_type,
+            "work_status": self.work_status,
+            "current_artifact": self.current_artifact,
+            "latest_conclusion": self.latest_conclusion,
+            "evidence_basis": list(self.evidence_basis),
+            "artifacts": list(self.artifacts),
             "tags": list(self.tags),
             "recent_decisions": list(self.recent_decisions),
             "open_questions": list(self.open_questions),
@@ -143,6 +155,12 @@ class SessionSnapshot:
             current_task=str(payload.get("current_task", "")),
             topic=str(payload.get("topic", "")),
             summary=str(payload.get("summary", "")),
+            activity_type=str(payload.get("activity_type", "")),
+            work_status=str(payload.get("work_status", "")),
+            current_artifact=str(payload.get("current_artifact", "")),
+            latest_conclusion=str(payload.get("latest_conclusion", "")),
+            evidence_basis=[str(item) for item in payload.get("evidence_basis", [])],
+            artifacts=[str(item) for item in payload.get("artifacts", [])],
             tags=[str(tag) for tag in payload.get("tags", [])],
             recent_decisions=[str(item) for item in payload.get("recent_decisions", [])],
             open_questions=[str(item) for item in payload.get("open_questions", [])],
