@@ -155,7 +155,7 @@ class MemoryWriterTests(unittest.TestCase):
             touched.parent.mkdir(parents=True, exist_ok=True)
             touched.write_text("pass\n", encoding="utf-8")
             store = SessionSnapshotStore()
-            agent = type("Agent", (), {"workspace_dir": workspace_dir})()
+            agent = type("Agent", (), {"agent_id": "reviewer", "workspace_dir": workspace_dir})()
 
             store.write(
                 agent,
@@ -177,3 +177,48 @@ class MemoryWriterTests(unittest.TestCase):
             self.assertEqual(snapshot.tags, ["resume"])
             self.assertIn("src/services/messaging.py", snapshot.touched_files)
             self.assertEqual(snapshot.open_questions, ["What should change?"])
+
+    def test_snapshot_store_separates_agents_with_shared_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            workspace_dir = Path(tempdir) / "workspace"
+            workspace_dir.mkdir(parents=True, exist_ok=True)
+            store = SessionSnapshotStore()
+            reviewer = type("Agent", (), {"agent_id": "reviewer", "workspace_dir": workspace_dir})()
+            helper = type("Agent", (), {"agent_id": "helper", "workspace_dir": workspace_dir})()
+
+            reviewer_path = store.write(
+                reviewer,
+                "discord:channel:shared",
+                user_text="review this",
+                assistant_text="done",
+            )
+            helper_path = store.write(
+                helper,
+                "discord:channel:shared",
+                user_text="summarize this",
+                assistant_text="done",
+            )
+
+            self.assertNotEqual(reviewer_path, helper_path)
+            self.assertIn("/reviewer/", str(reviewer_path))
+            self.assertIn("/helper/", str(helper_path))
+
+    def test_snapshot_store_ignores_corrupted_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            workspace_dir = Path(tempdir) / "workspace"
+            workspace_dir.mkdir(parents=True, exist_ok=True)
+            store = SessionSnapshotStore()
+            agent = type("Agent", (), {"agent_id": "reviewer", "workspace_dir": workspace_dir})()
+            path = (
+                workspace_dir
+                / ".agent-messaging"
+                / "snapshots"
+                / "reviewer"
+                / "discord_channel_123.json"
+            )
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{invalid json", encoding="utf-8")
+
+            snapshot = store.read(agent, "discord:channel:123")
+
+            self.assertIsNone(snapshot)

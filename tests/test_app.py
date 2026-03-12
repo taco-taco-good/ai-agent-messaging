@@ -145,6 +145,7 @@ class AgentMessagingAppTests(unittest.IsolatedAsyncioTestCase):
             / "reviewer"
             / ".agent-messaging"
             / "snapshots"
+            / "reviewer"
             / "discord_channel_123.json"
         )
         self.assertTrue(snapshot_path.exists())
@@ -191,6 +192,78 @@ class AgentMessagingAppTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Memory", chunks[0])
         self.assertIn("Current user message:\ncontinue", chunks[0])
         await resumed_app.shutdown()
+
+    async def test_shared_workspace_agents_do_not_share_resume_snapshot(self) -> None:
+        helper_memory_dir = self.root / "memory" / "helper"
+        helper_agent = AgentConfig(
+            agent_id="helper",
+            display_name="Helper",
+            provider="codex",
+            discord_token="token",
+            workspace_dir=self.root / "workspace" / "reviewer",
+            memory_dir=helper_memory_dir,
+            model="alpha",
+            persona="Summarize and assist.",
+            persona_file=self.root / "config" / "personas" / "reviewer.md",
+        )
+        registry = AgentRegistry(
+            {
+                "reviewer": self.app.registry.get("reviewer"),
+                "helper": helper_agent,
+            }
+        )
+        session_manager = SessionManager(SessionStore(self.root / "runtime" / "sessions.json"))
+        multi_app = AgentMessagingApp(
+            registry=registry,
+            session_manager=session_manager,
+            provider_factory=lambda config, session_key, session_record=None: FakeProvider(
+                default_model=(session_record.current_model if session_record else None)
+                or config.model
+            ),
+        )
+        await multi_app.handle_user_message(
+            agent_id="reviewer",
+            channel_id="shared",
+            content="review src/services/messaging.py",
+            is_dm=False,
+            metadata=FrontmatterMetadata(
+                tags=["review"],
+                topic="Reviewer-only task",
+                summary="Persist reviewer context only.",
+            ),
+        )
+
+        chunks = await multi_app.handle_user_message(
+            agent_id="helper",
+            channel_id="shared",
+            content="continue",
+            is_dm=False,
+        )
+
+        self.assertEqual(chunks, ["reply:continue:alpha"])
+        await multi_app.shutdown()
+
+    async def test_corrupted_snapshot_is_ignored_during_bootstrap(self) -> None:
+        snapshot_path = (
+            self.root
+            / "workspace"
+            / "reviewer"
+            / ".agent-messaging"
+            / "snapshots"
+            / "reviewer"
+            / "discord_channel_123.json"
+        )
+        snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+        snapshot_path.write_text("{invalid json", encoding="utf-8")
+
+        chunks = await self.app.handle_user_message(
+            agent_id="reviewer",
+            channel_id="123",
+            content="continue",
+            is_dm=False,
+        )
+
+        self.assertEqual(chunks, ["reply:continue:alpha"])
 
     async def test_model_command_updates_session(self) -> None:
         await self.app.handle_user_message(
