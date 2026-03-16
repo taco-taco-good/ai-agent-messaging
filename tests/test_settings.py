@@ -27,6 +27,8 @@ class SettingsTests(unittest.TestCase):
                       reviewer:
                         provider: codex
                         discord_token: yaml-token
+                        warning_timeout_seconds: 15
+                        hard_timeout_seconds: 600
                         persona_file: ./personas/reviewer.md
                         workspace_dir: ../workspace/reviewer
                         memory_dir: ../memory
@@ -46,6 +48,8 @@ class SettingsTests(unittest.TestCase):
                 settings.agents["reviewer"].workspace_dir,
                 (root / "workspace" / "reviewer").resolve(),
             )
+            self.assertEqual(settings.agents["reviewer"].warning_timeout_seconds, 15.0)
+            self.assertEqual(settings.agents["reviewer"].hard_timeout_seconds, 600.0)
             self.assertEqual(settings.runtime_dir, (root / "runtime").resolve())
             self.assertEqual(settings.jobs_dir, (root / "jobs").resolve())
             self.assertEqual(settings.skills_dir, (root / "skills").resolve())

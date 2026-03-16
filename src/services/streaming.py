@@ -4,7 +4,12 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any, Optional
 
-from agent_messaging.providers.base import ProgressCallback, ProviderResponseTimeout, ResponseCallback
+from agent_messaging.providers.base import (
+    ProgressCallback,
+    ProviderResponseTimeout,
+    ProviderStaleSession,
+    ResponseCallback,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -33,7 +38,7 @@ async def collect_with_timeout_recovery(
     wrapper.set_progress_callback(progress_callback)
     try:
         return await collect_stream(stream_factory(wrapper), response_callback), wrapper
-    except ProviderResponseTimeout:
+    except (ProviderResponseTimeout, ProviderStaleSession):
         wrapper.set_progress_callback(None)
         _, recovered_wrapper = await reset_session()
         recovered_wrapper.set_progress_callback(progress_callback)

@@ -60,6 +60,27 @@ class ProviderFactoryTests(unittest.TestCase):
             self.assertIsInstance(wrapper, ClaudeWrapper)
             self.assertEqual(wrapper.current_model, "opus-1m")
             self.assertEqual(wrapper.provider_session_id, "session-claude")
+            self.assertEqual(wrapper.warning_timeout, 60.0)
+            self.assertEqual(wrapper.hard_timeout, 3600.0)
+
+    def test_create_provider_applies_claude_timeouts_from_agent_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            agent = AgentConfig(
+                agent_id="reviewer",
+                provider="claude",
+                discord_token="token",
+                workspace_dir=Path(tempdir) / "workspace" / "reviewer",
+                memory_dir=Path(tempdir) / "memory",
+                model="opus",
+                warning_timeout_seconds=90.0,
+                hard_timeout_seconds=3600.0,
+            )
+
+            wrapper = create_provider(agent, "discord:channel:1")
+
+            self.assertIsInstance(wrapper, ClaudeWrapper)
+            self.assertEqual(wrapper.warning_timeout, 90.0)
+            self.assertEqual(wrapper.hard_timeout, 3600.0)
 
     def test_create_provider_rehydrates_gemini_session_model(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:

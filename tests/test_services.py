@@ -7,7 +7,7 @@ from pathlib import Path
 from agent_messaging.core.errors import InteractionValidationError
 from agent_messaging.core.models import AgentConfig, FrontmatterMetadata, ModelOption
 from agent_messaging.config.registry import AgentRegistry
-from agent_messaging.providers.base import CLIWrapper, ProviderResponseTimeout
+from agent_messaging.providers.base import CLIWrapper, ProviderResponseTimeout, ProviderStaleSession
 from agent_messaging.services import (
     CommandService,
     CommandRouter,
@@ -77,6 +77,18 @@ class _TimeoutOnceProvider(_FakeProvider):
         if not self._timed_out:
             self._timed_out = True
             raise ProviderResponseTimeout("simulated timeout")
+        yield "ok-after-retry"
+
+
+class _StaleSessionOnceProvider(_FakeProvider):
+    def __init__(self, default_model=None):
+        super().__init__(default_model=default_model)
+        self._stale_once = True
+
+    async def send_user_message(self, message: str):
+        if self._stale_once:
+            self._stale_once = False
+            raise ProviderStaleSession("simulated stale session")
         yield "ok-after-retry"
 
 
@@ -341,6 +353,55 @@ class ConversationServiceTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(chunks, ["ok-after-retry"])
             self.assertEqual(seen_session_ids, ["stale-thread", None])
+
+    async def test_handle_user_message_retries_once_after_stale_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            agent = AgentConfig(
+                agent_id="reviewer",
+                provider="claude",
+                discord_token="token",
+                workspace_dir=Path(tempdir) / "workspace" / "reviewer",
+                memory_dir=Path(tempdir) / "memory",
+                model="sonnet",
+                display_name="Reviewer",
+            )
+            registry = AgentRegistry({"reviewer": agent})
+            store = SessionStore(Path(tempdir) / "runtime" / "sessions.json")
+            session_manager = SessionManager(store)
+            attempts = {"count": 0}
+
+            def _factory(config, session_key, session_record=None):
+                del session_key
+                del session_record
+                attempts["count"] += 1
+                provider = _StaleSessionOnceProvider(default_model=config.model)
+                provider._stale_once = attempts["count"] == 1
+                return provider
+
+            runtime = ProviderRuntime(
+                session_manager=session_manager,
+                provider_factory=_factory,
+            )
+            service = ConversationService(
+                registry=registry,
+                session_manager=session_manager,
+                provider_runtime=runtime,
+            )
+
+            chunks = await service.handle_user_message(
+                agent_id="reviewer",
+                channel_id="1",
+                content="hello",
+                is_dm=False,
+                metadata=FrontmatterMetadata(
+                    tags=["greeting"],
+                    topic="Greeting",
+                    summary="Said hello.",
+                ),
+            )
+
+            self.assertEqual(chunks, ["ok-after-retry"])
+            self.assertEqual(attempts["count"], 2)
 
     async def test_handle_user_message_chunks_long_reply(self) -> None:
         class _LongProvider(_FakeProvider):

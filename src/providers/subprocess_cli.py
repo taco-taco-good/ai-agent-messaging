@@ -7,10 +7,12 @@ import os
 import pty
 import re
 import shutil
-import uuid
 import select
+import signal
 import subprocess
 import termios
+import uuid
+from contextlib import suppress
 from pathlib import Path
 from typing import AsyncIterator, Callable, Dict, Iterable, List, Optional, Sequence
 
@@ -41,7 +43,7 @@ class SubprocessCLIWrapper(CLIWrapper):
         idle_timeout: float = 1.0,
         use_pty: bool = True,
         warning_timeout: float = 60.0,
-        hard_timeout: float = 180.0,
+        hard_timeout: float = 3600.0,
         prompt_args: Optional[Sequence[str]] = None,
         model_args_builder: Optional[Callable[[str], Sequence[str]]] = None,
         initial_session_args_builder: Optional[Callable[[str], Sequence[str]]] = None,
@@ -111,6 +113,7 @@ class SubprocessCLIWrapper(CLIWrapper):
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT,
+                    **self._subprocess_session_kwargs(),
                 )
             except FileNotFoundError as exc:
                 raise ProviderStartupError(
@@ -325,6 +328,7 @@ class SubprocessCLIWrapper(CLIWrapper):
                 stdout=slave_fd,
                 stderr=slave_fd,
                 close_fds=True,
+                **self._subprocess_session_kwargs(),
             )
         except FileNotFoundError as exc:
             logger.error(
@@ -355,11 +359,11 @@ class SubprocessCLIWrapper(CLIWrapper):
         self.provider_session_id = ""
         try:
             if proc is not None and proc.poll() is None:
-                proc.terminate()
+                self._terminate_subprocess(proc)
                 try:
                     proc.wait(timeout=2.0)
                 except subprocess.TimeoutExpired:
-                    proc.kill()
+                    self._kill_subprocess(proc)
                     proc.wait(timeout=2.0)
         finally:
             # Always close the fd, even if terminate/kill raised
@@ -442,6 +446,7 @@ class SubprocessCLIWrapper(CLIWrapper):
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                **self._subprocess_session_kwargs(),
             )
         except FileNotFoundError as exc:
             raise ProviderStartupError(
@@ -465,11 +470,13 @@ class SubprocessCLIWrapper(CLIWrapper):
                     timeout=remaining,
                 )
         except asyncio.TimeoutError as exc:
-            process.kill()
-            await communicate_task
+            await self._terminate_one_shot_process(process, communicate_task)
             raise ProviderResponseTimeout(
                 "Provider did not respond within {0} seconds.".format(self.hard_timeout)
             ) from exc
+        except BaseException:
+            await self._terminate_one_shot_process(process, communicate_task)
+            raise
         output = stdout.decode("utf-8", errors="replace")
         error_output = stderr.decode("utf-8", errors="replace")
         combined_output = "\n".join(part for part in (output, error_output) if part)
@@ -501,6 +508,52 @@ class SubprocessCLIWrapper(CLIWrapper):
             parsed_output=sanitized_output or sanitized_combined,
         )
         return sanitized_output or sanitized_combined
+
+    async def _terminate_one_shot_process(
+        self,
+        process: asyncio.subprocess.Process,
+        communicate_task: Optional[asyncio.Task[tuple[bytes, bytes]]] = None,
+    ) -> None:
+        if process.returncode is None:
+            self._terminate_subprocess(process)
+            try:
+                await asyncio.wait_for(process.wait(), timeout=0.5)
+            except (asyncio.TimeoutError, ProcessLookupError):
+                self._kill_subprocess(process)
+        if communicate_task is not None:
+            with suppress(BaseException):
+                await communicate_task
+        else:
+            with suppress(BaseException):
+                await process.wait()
+
+    @staticmethod
+    def _subprocess_session_kwargs() -> Dict[str, object]:
+        if os.name == "nt":
+            return {}
+        return {"start_new_session": True}
+
+    @staticmethod
+    def _terminate_subprocess(process: object) -> None:
+        pid = getattr(process, "pid", None)
+        if pid is None:
+            return
+        if os.name != "nt":
+            with suppress(ProcessLookupError):
+                os.killpg(pid, signal.SIGTERM)
+            return
+        process.terminate()
+
+    @staticmethod
+    def _kill_subprocess(process: object) -> None:
+        pid = getattr(process, "pid", None)
+        if pid is None:
+            return
+        if os.name != "nt":
+            with suppress(ProcessLookupError):
+                os.killpg(pid, signal.SIGKILL)
+            return
+        process.kill()
 
     def _build_one_shot_command(self, prompt: str) -> List[str]:
         command = [self.executable, *self.base_args]

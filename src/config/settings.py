@@ -68,6 +68,8 @@ def load_settings(config_path: Path) -> AppSettings:
             persona=persona,
             persona_file=persona_file,
             cli_args=[str(item) for item in payload.get("cli_args", [])],
+            warning_timeout_seconds=_resolve_optional_float(payload.get("warning_timeout_seconds")),
+            hard_timeout_seconds=_resolve_optional_float(payload.get("hard_timeout_seconds")),
         )
         logger.info(
             "agent_config_loaded",
@@ -114,6 +116,12 @@ def _resolve_optional_path(base_dir: Path, value: object) -> Path | None:
     if not value:
         return None
     return _resolve_path(base_dir, value)
+
+
+def _resolve_optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    return float(value)
 
 
 def _resolve_persona(

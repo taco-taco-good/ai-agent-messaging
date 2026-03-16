@@ -22,6 +22,8 @@ class AgentConfig:
     persona: str = ""
     persona_file: Optional[Path] = None
     cli_args: List[str] = field(default_factory=list)
+    warning_timeout_seconds: Optional[float] = None
+    hard_timeout_seconds: Optional[float] = None
 
     @property
     def workdir(self) -> Path:
