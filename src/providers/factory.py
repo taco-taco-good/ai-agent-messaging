@@ -14,11 +14,17 @@ ProviderBuilder = Callable[[AgentConfig, Optional[SessionRecord]], CLIWrapper]
 
 
 def _build_claude(agent: AgentConfig, session_record: Optional[SessionRecord]) -> CLIWrapper:
+    kwargs = {}
+    if agent.warning_timeout_seconds is not None:
+        kwargs["warning_timeout"] = agent.warning_timeout_seconds
+    if agent.hard_timeout_seconds is not None:
+        kwargs["hard_timeout"] = agent.hard_timeout_seconds
     return ClaudeWrapper(
         default_model=(session_record.current_model if session_record else None) or agent.model,
         workspace_dir=agent.workspace_dir,
         base_args=agent.cli_args,
         provider_session_id=session_record.provider_session_id if session_record else None,
+        **kwargs,
     )
 
 

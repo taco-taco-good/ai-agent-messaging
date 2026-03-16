@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import asyncio
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 from agent_messaging.providers.claude import ClaudeWrapper
-from agent_messaging.providers.base import ProviderError, ProviderStartupError
+from agent_messaging.providers.base import (
+    ProviderError,
+    ProviderResponseTimeout,
+    ProviderStaleSession,
+    ProviderStartupError,
+)
 from agent_messaging.providers.gemini import GeminiWrapper
 
 
@@ -154,6 +161,37 @@ class SubprocessProviderTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(chunks, ["reply:__sleep__:sonnet"])
             self.assertEqual(progress, [])
 
+    async def test_claude_wrapper_clears_session_lock_after_timeout(self) -> None:
+        fixture = Path(__file__).parent / "fixtures" / "fake_forking_cli.py"
+        with tempfile.TemporaryDirectory() as tempdir:
+            workspace = Path(tempdir)
+            wrapper = ClaudeWrapper(
+                executable=sys.executable,
+                base_args=[str(fixture)],
+                default_model="sonnet",
+                workspace_dir=workspace,
+                warning_timeout=0.05,
+                hard_timeout=0.1,
+            )
+            await wrapper.start()
+            session_id = wrapper.provider_session_id
+
+            with self.assertRaises(ProviderResponseTimeout):
+                async for _ in wrapper.send_user_message("timeout"):
+                    pass
+
+            for _ in range(50):
+                marker = workspace / ".fake-cli-session-{0}".format(session_id)
+                if not marker.exists():
+                    break
+                await asyncio.sleep(0.02)
+            else:
+                self.fail("Session lock marker was not cleared after timeout.")
+
+            with self.assertRaises(ProviderResponseTimeout):
+                async for _ in wrapper.send_user_message("retry"):
+                    pass
+
     async def test_claude_wrapper_streams_multiple_text_deltas_in_order(self) -> None:
         fixture = Path(__file__).parent / "fixtures" / "fake_cli.py"
         with tempfile.TemporaryDirectory() as tempdir:
@@ -169,6 +207,24 @@ class SubprocessProviderTests(unittest.IsolatedAsyncioTestCase):
                 chunks.append(chunk)
 
             self.assertEqual(chunks, ["reply:__s", "plit:sonnet"])
+
+    async def test_claude_wrapper_keeps_long_running_stream_alive_while_output_continues(self) -> None:
+        fixture = Path(__file__).parent / "fixtures" / "fake_cli.py"
+        with tempfile.TemporaryDirectory() as tempdir:
+            wrapper = ClaudeWrapper(
+                executable=sys.executable,
+                base_args=[str(fixture)],
+                default_model="sonnet",
+                workspace_dir=Path(tempdir),
+                warning_timeout=0.05,
+                hard_timeout=0.3,
+            )
+
+            chunks = []
+            async for chunk in wrapper.send_user_message("__slowstream__"):
+                chunks.append(chunk)
+
+            self.assertEqual(chunks, ["reply:", "__", "slow", "stream__:sonnet"])
 
     async def test_claude_wrapper_handles_stream_json_lines_over_reader_limit(self) -> None:
         fixture = Path(__file__).parent / "fixtures" / "fake_cli.py"
@@ -201,6 +257,92 @@ class SubprocessProviderTests(unittest.IsolatedAsyncioTestCase):
                     pass
 
             self.assertEqual(str(context.exception), "synthetic stream failure")
+
+    async def test_claude_wrapper_accepts_nonzero_exit_after_successful_stream(self) -> None:
+        fixture = Path(__file__).parent / "fixtures" / "fake_cli.py"
+        with tempfile.TemporaryDirectory() as tempdir:
+            wrapper = ClaudeWrapper(
+                executable=sys.executable,
+                base_args=[str(fixture)],
+                default_model="sonnet",
+                workspace_dir=Path(tempdir),
+            )
+
+            chunks = []
+            async for chunk in wrapper.send_user_message("__success_exit_1__"):
+                chunks.append(chunk)
+
+            self.assertEqual(chunks, ["reply:success-exit-1:sonnet"])
+
+    async def test_claude_wrapper_classifies_stale_initial_session_error(self) -> None:
+        fixture = Path(__file__).parent / "fixtures" / "fake_cli.py"
+        with tempfile.TemporaryDirectory() as tempdir:
+            workspace = Path(tempdir)
+            wrapper = ClaudeWrapper(
+                executable=sys.executable,
+                base_args=[str(fixture)],
+                default_model="sonnet",
+                workspace_dir=workspace,
+            )
+            await wrapper.start()
+            marker = workspace / ".fake-cli-session-{0}".format(wrapper.provider_session_id)
+            marker.write_text("created\n", encoding="utf-8")
+
+            with self.assertRaises(ProviderStaleSession) as context:
+                async for _ in wrapper.send_user_message("hello"):
+                    pass
+
+            self.assertIn("already in use", str(context.exception))
+
+    async def test_claude_wrapper_kills_streaming_process_on_cancellation(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            fixture = root / "slow_stream.py"
+            pid_file = root / "child.pid"
+            fixture.write_text(
+                (
+                    "from __future__ import annotations\n"
+                    "import sys\n"
+                    "import time\n"
+                    "from pathlib import Path\n"
+                    "Path(sys.argv[1]).write_text(str(__import__('os').getpid()), encoding='utf-8')\n"
+                    "time.sleep(30)\n"
+                ),
+                encoding="utf-8",
+            )
+            wrapper = ClaudeWrapper(
+                executable=sys.executable,
+                base_args=[str(fixture), str(pid_file)],
+                default_model="sonnet",
+                workspace_dir=root,
+                warning_timeout=5.0,
+                hard_timeout=60.0,
+            )
+
+            async def _consume() -> None:
+                async for _ in wrapper.send_user_message("hello"):
+                    pass
+
+            task = asyncio.create_task(_consume())
+            for _ in range(50):
+                if pid_file.exists():
+                    break
+                await asyncio.sleep(0.02)
+            self.assertTrue(pid_file.exists())
+            child_pid = int(pid_file.read_text(encoding="utf-8").strip())
+
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+            for _ in range(50):
+                try:
+                    os.kill(child_pid, 0)
+                except OSError:
+                    break
+                await asyncio.sleep(0.02)
+            else:
+                self.fail("Claude streaming subprocess was not terminated after cancellation.")
 
     async def test_gemini_wrapper_stats_reads_exact_model_from_chat_log(self) -> None:
         fixture = Path(__file__).parent / "fixtures" / "fake_cli.py"

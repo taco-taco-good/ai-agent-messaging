@@ -48,6 +48,10 @@ if "-p" in args:
     stream_chunks = [response]
     if prompt == "__split__":
         stream_chunks = ["reply:__s", "plit:{0}".format(current_model)]
+    if prompt == "__slowstream__":
+        stream_chunks = ["reply:", "__", "slow", "stream__:{0}".format(current_model)]
+    if prompt == "__success_exit_1__":
+        stream_chunks = ["reply:success-exit-1:{0}".format(current_model)]
     if prompt == "__longline__":
         stream_chunks = ["x" * 70000]
     if prompt == "__error_result__":
@@ -56,6 +60,8 @@ if "-p" in args:
     if "--output-format" in args and args[args.index("--output-format") + 1] == "stream-json":
         print(json.dumps({"type": "system", "subtype": "init"}), flush=True)
         for chunk in stream_chunks:
+            if prompt == "__slowstream__":
+                time.sleep(0.12)
             print(
                 json.dumps(
                     {
@@ -79,7 +85,7 @@ if "-p" in args:
         )
     else:
         print(response, flush=True)
-    raise SystemExit(1 if prompt == "__error_result__" else 0)
+    raise SystemExit(1 if prompt in {"__error_result__", "__success_exit_1__"} else 0)
 
 for line in sys.stdin:
     payload = line.strip()
