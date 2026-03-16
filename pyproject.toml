@@ -6,8 +6,8 @@ build-backend = "setuptools.build_meta"
 name = "ai-agent-messaging"
 version = "0.1.0"
 description = "Discord surface for local AI CLI agents with persistent sessions and markdown memory."
-readme = "docs/plans.md"
-requires-python = ">=3.9"
+readme = "README.md"
+requires-python = ">=3.10"
 dependencies = [
   "PyYAML>=6.0",
 ]
