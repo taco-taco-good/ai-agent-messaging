@@ -29,6 +29,59 @@ def _build_claude_model_args(model: str) -> list[str]:
     return ["--model", model]
 
 
+def _preview_stream_lines(lines: Sequence[str], limit: int = 3) -> str:
+    if not lines:
+        return ""
+    preview = " | ".join(line.strip() for line in lines[-limit:] if line.strip())
+    if len(preview) <= 400:
+        return preview
+    return preview[:397].rstrip() + "..."
+
+
+def _truncate_preview(text: str, limit: int = 400) -> str:
+    normalized = text.strip()
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 3].rstrip() + "..."
+
+
+def _extract_result_error_text(payload: dict) -> str:
+    direct_keys = ("result", "error", "message", "detail", "details", "error_message")
+    for key in direct_keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, dict):
+            nested = _extract_result_error_text(value)
+            if nested:
+                return nested
+    errors = payload.get("errors")
+    if isinstance(errors, list):
+        for item in errors:
+            if isinstance(item, str) and item.strip():
+                return item.strip()
+            if isinstance(item, dict):
+                nested = _extract_result_error_text(item)
+                if nested:
+                    return nested
+    subtype = payload.get("subtype")
+    if isinstance(subtype, str) and subtype.strip():
+        return "Claude execution failed ({0}).".format(subtype.strip())
+    return ""
+
+
+def _preview_result_payload(lines: Sequence[str]) -> str:
+    for raw_line in reversed(lines):
+        try:
+            payload = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+        if payload.get("type") != "result":
+            continue
+        return _truncate_preview(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+    return ""
+
+
 class ClaudeWrapper(SubprocessCLIWrapper):
     provider_name = "claude"
     default_command = "claude"
@@ -269,12 +322,30 @@ class ClaudeWrapper(SubprocessCLIWrapper):
             raise
 
         stderr_text = stderr.decode("utf-8", errors="replace").strip()
-        stale_detail = self._extract_stale_session_detail(stderr_text, result_text, final_text)
+        stale_detail = self._extract_stale_session_detail(
+            stderr_text,
+            result_text,
+            final_text,
+            _preview_stream_lines(lines),
+        )
         if stale_detail is not None:
             raise ProviderStaleSession(
                 "Claude session could not be resumed safely: {0}".format(stale_detail)
             )
         if result_type == "error":
+            logger.error(
+                "claude_stream_failed",
+                extra={
+                    "provider_session_id": self.provider_session_id,
+                    "returncode": returncode,
+                    "result_type": result_type,
+                    "stderr_preview": stderr_text[:400],
+                    "result_preview": result_text[:400],
+                    "final_preview": final_text[:400],
+                    "stream_preview": _preview_stream_lines(lines),
+                    "result_payload_preview": _preview_result_payload(lines),
+                },
+            )
             raise ProviderError(result_text or stderr_text or "Claude print command failed.")
         if returncode != 0:
             if result_type == "success" and final_text:
@@ -286,6 +357,19 @@ class ClaudeWrapper(SubprocessCLIWrapper):
                     },
                 )
             else:
+                logger.error(
+                    "claude_stream_failed",
+                    extra={
+                        "provider_session_id": self.provider_session_id,
+                        "returncode": returncode,
+                        "result_type": result_type,
+                        "stderr_preview": stderr_text[:400],
+                        "result_preview": result_text[:400],
+                        "final_preview": final_text[:400],
+                        "stream_preview": _preview_stream_lines(lines),
+                        "result_payload_preview": _preview_result_payload(lines),
+                    },
+                )
                 raise ProviderError(stderr_text or final_text or "Claude print command failed.")
 
         self._has_history = True
@@ -316,10 +400,11 @@ class ClaudeWrapper(SubprocessCLIWrapper):
                 continue
             if payload.get("type") != "result":
                 continue
+            if payload.get("is_error"):
+                normalized = _extract_result_error_text(payload)
+                return "error", normalized
             result_text = payload.get("result")
             normalized = result_text if isinstance(result_text, str) else ""
-            if payload.get("is_error"):
-                return "error", normalized
             subtype = payload.get("subtype")
             if subtype == "success":
                 return "success", normalized

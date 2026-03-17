@@ -258,6 +258,22 @@ class SubprocessProviderTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(str(context.exception), "synthetic stream failure")
 
+    async def test_claude_wrapper_surfaces_stream_json_error_message_field(self) -> None:
+        fixture = Path(__file__).parent / "fixtures" / "fake_cli.py"
+        with tempfile.TemporaryDirectory() as tempdir:
+            wrapper = ClaudeWrapper(
+                executable=sys.executable,
+                base_args=[str(fixture)],
+                default_model="sonnet",
+                workspace_dir=Path(tempdir),
+            )
+
+            with self.assertRaises(ProviderError) as context:
+                async for _ in wrapper.send_user_message("__error_result_with_message_field__"):
+                    pass
+
+            self.assertEqual(str(context.exception), "synthetic execution failure")
+
     async def test_claude_wrapper_accepts_nonzero_exit_after_successful_stream(self) -> None:
         fixture = Path(__file__).parent / "fixtures" / "fake_cli.py"
         with tempfile.TemporaryDirectory() as tempdir:

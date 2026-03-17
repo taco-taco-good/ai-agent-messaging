@@ -57,6 +57,9 @@ if "-p" in args:
     if prompt == "__error_result__":
         response = "synthetic stream failure"
         stream_chunks = []
+    if prompt == "__error_result_with_message_field__":
+        response = ""
+        stream_chunks = []
     if "--output-format" in args and args[args.index("--output-format") + 1] == "stream-json":
         print(json.dumps({"type": "system", "subtype": "init"}), flush=True)
         for chunk in stream_chunks:
@@ -77,6 +80,13 @@ if "-p" in args:
         result_payload = {"type": "result", "subtype": "success", "result": response}
         if prompt == "__error_result__":
             result_payload["is_error"] = True
+        if prompt == "__error_result_with_message_field__":
+            result_payload = {
+                "type": "result",
+                "subtype": "error_during_execution",
+                "is_error": True,
+                "message": "synthetic execution failure",
+            }
         print(json.dumps(result_payload), flush=True)
     elif "--output-format" in args and args[args.index("--output-format") + 1] == "json":
         print(
@@ -85,7 +95,9 @@ if "-p" in args:
         )
     else:
         print(response, flush=True)
-    raise SystemExit(1 if prompt in {"__error_result__", "__success_exit_1__"} else 0)
+    raise SystemExit(
+        1 if prompt in {"__error_result__", "__error_result_with_message_field__", "__success_exit_1__"} else 0
+    )
 
 for line in sys.stdin:
     payload = line.strip()
