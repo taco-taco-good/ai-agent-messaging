@@ -30,8 +30,10 @@ class _FakeProvider(CLIWrapper):
     async def start(self) -> None:
         self._alive = True
         self.provider_session_id = "session-1"
+        self._has_history = False
 
     async def send_user_message(self, message: str):
+        self._has_history = True
         yield "ok"
 
     async def send_native_command(self, command: str, args=None):
@@ -90,6 +92,17 @@ class _StaleSessionOnceProvider(_FakeProvider):
             self._stale_once = False
             raise ProviderStaleSession("simulated stale session")
         yield "ok-after-retry"
+
+
+class _CapturingProvider(_FakeProvider):
+    def __init__(self, default_model=None):
+        super().__init__(default_model=default_model)
+        self.seen_messages = []
+
+    async def send_user_message(self, message: str):
+        self.seen_messages.append(message)
+        self._has_history = True
+        yield "ok"
 
 
 class PendingInteractionStoreTests(unittest.TestCase):
@@ -236,6 +249,89 @@ class ConversationServiceTests(unittest.IsolatedAsyncioTestCase):
                 ),
             )
             self.assertEqual(chunks, ["ok"])
+
+    async def test_handle_user_message_sends_first_session_prompt_without_runtime_resume_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            agent = AgentConfig(
+                agent_id="reviewer",
+                provider="codex",
+                discord_token="token",
+                workspace_dir=Path(tempdir) / "workspace" / "reviewer",
+                memory_dir=Path(tempdir) / "memory",
+                model="alpha",
+                display_name="Reviewer",
+            )
+            registry = AgentRegistry({"reviewer": agent})
+            store = SessionStore(Path(tempdir) / "runtime" / "sessions.json")
+            session_manager = SessionManager(store)
+            provider = _CapturingProvider(default_model=agent.model)
+            runtime = ProviderRuntime(
+                session_manager=session_manager,
+                provider_factory=lambda config, session_key, session_record=None: provider,
+            )
+            service = ConversationService(
+                registry=registry,
+                session_manager=session_manager,
+                provider_runtime=runtime,
+            )
+
+            first = await service.handle_user_message(
+                agent_id="reviewer",
+                channel_id="1",
+                content="이 버그를 계속 고쳐줘",
+                is_dm=False,
+            )
+            self.assertEqual(first, ["ok"])
+            self.assertEqual(len(provider.seen_messages), 1)
+            self.assertEqual(provider.seen_messages[0], "이 버그를 계속 고쳐줘")
+
+    async def test_handle_user_message_keeps_follow_up_prompt_unchanged_after_history_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            agent = AgentConfig(
+                agent_id="reviewer",
+                provider="codex",
+                discord_token="token",
+                workspace_dir=Path(tempdir) / "workspace" / "reviewer",
+                memory_dir=Path(tempdir) / "memory",
+                model="alpha",
+                display_name="Reviewer",
+            )
+            registry = AgentRegistry({"reviewer": agent})
+            store = SessionStore(Path(tempdir) / "runtime" / "sessions.json")
+            session_manager = SessionManager(store)
+            provider = _CapturingProvider(default_model=agent.model)
+            runtime = ProviderRuntime(
+                session_manager=session_manager,
+                provider_factory=lambda config, session_key, session_record=None: provider,
+            )
+            service = ConversationService(
+                registry=registry,
+                session_manager=session_manager,
+                provider_runtime=runtime,
+            )
+
+            first = await service.handle_user_message(
+                agent_id="reviewer",
+                channel_id="1",
+                content="계속하자",
+                is_dm=False,
+            )
+            self.assertEqual(first, ["ok"])
+
+            second = await service.handle_user_message(
+                agent_id="reviewer",
+                channel_id="1",
+                content="오늘 할 일 정리해줘",
+                is_dm=False,
+            )
+            self.assertEqual(second, ["ok"])
+            self.assertEqual(
+                provider.seen_messages,
+                [
+                    "계속하자",
+                    "오늘 할 일 정리해줘",
+                ],
+            )
 
     async def test_handle_user_message_retries_once_after_timeout(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:

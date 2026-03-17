@@ -44,10 +44,6 @@ class SessionSnapshotStoreProtocol(Protocol):
     def read(self, agent: Any, session_key: str) -> Any: ...
 
 
-class ResumeContextAssemblerProtocol(Protocol):
-    def assemble(self, agent: Any, session_key: str, user_text: str) -> str: ...
-
-
 class ToolRuntimeProtocol(Protocol):
     def register(self, name: str, handler: Any) -> None: ...
 
